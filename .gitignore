@@ -1,0 +1,9 @@
+docs/
+var/
+bin/
+*.db
+*.db-wal
+*.db-shm
+.env
+*.log
+coverage.out
