@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package mangaproto;
+
+option go_package = "mangahub/proto/mangaproto;mangaproto";
+
+// Catalog service (backend -> catalog). Three unary RPCs; no progress RPC:
+// reading progress lives in the backend's user_library table.
+service MangaService {
+  rpc SearchManga    (SearchMangaRequest)    returns (SearchMangaResponse);
+  rpc GetManga       (GetMangaRequest)       returns (GetMangaResponse);
+  rpc UpdateChapters (UpdateChaptersRequest) returns (UpdateChaptersResponse);
+}
+
+message Manga {
+  string id = 1;
+  string title = 2;
+  string author = 3;
+  repeated string genres = 4;
+  string status = 5;          // ongoing | completed | hiatus
+  int32  total_chapters = 6;
+  string description = 7;
+}
+
+// InvalidArgument for a negative limit/offset or an unknown status filter.
+message SearchMangaRequest  { string query = 1; string genre = 2; string status = 3; int32 limit = 4; int32 offset = 5; }
+message SearchMangaResponse { repeated Manga items = 1; int32 total = 2; }
+
+// NotFound if the id does not exist; InvalidArgument for an empty id.
+message GetMangaRequest  { string id = 1; }
+message GetMangaResponse { Manga manga = 1; }
+
+// total_chapters = the NEW latest chapter number; must be greater than the current one.
+// InvalidArgument for <= 0, NotFound for an unknown id, FailedPrecondition when not greater.
+message UpdateChaptersRequest  { string id = 1; int32 total_chapters = 2; }
+message UpdateChaptersResponse { Manga manga = 1; int32 previous_total_chapters = 2; }
