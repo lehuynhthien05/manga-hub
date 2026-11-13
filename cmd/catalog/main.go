@@ -1,16 +1,28 @@
+// Command catalog is the MangaHub gRPC catalog service.
+// Phase 1 stub: it only loads and logs its configuration.
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"github.com/joho/godotenv"
+	"mangahub/internal/config"
+	"mangahub/internal/logging"
 )
 
 func main() {
-	fmt.Println("[Catalog] gRPC Service listening on port 9092")
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	fmt.Println("[Catalog] Service stopped.")
+	envErr := godotenv.Load() // a real environment variable wins over .env
+	cfg, err := config.LoadCatalog(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "catalog: invalid configuration:\n"+err.Error())
+		os.Exit(2)
+	}
+	log := logging.New("catalog", cfg.LogLevel)
+	if envErr != nil && !errors.Is(envErr, fs.ErrNotExist) {
+		log.Warn("could not read .env", "err", envErr)
+	}
+	log.Info("effective config", "grpc", cfg.GRPCAddr, "db", cfg.DBPath, "seed_path", cfg.SeedPath)
 }
