@@ -1,0 +1,14 @@
+docs/
+var/
+bin/
+*.db
+*.db-wal
+*.db-shm
+.env
+*.log
+coverage.out
+.DS_Store
+.agent/
+AGENTS.md
+CLAUDE.md
+CONTEXT.md
