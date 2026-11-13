@@ -15,6 +15,7 @@ import (
 )
 
 var (
+	ErrEmptySecret    = errors.New("jwt secret must not be empty")
 	ErrInvalidToken   = errors.New("invalid token")
 	ErrExpiredToken   = errors.New("token has expired")
 	ErrWeakPassword   = errors.New("password must be at least 8 characters with mixed case and numbers")
@@ -73,7 +74,7 @@ func ValidateEmail(email string) error {
 // GenerateJWT creates a signed JWT token valid for 24 hours
 func GenerateJWT(userID, username, secret string) (string, time.Time, error) {
 	if secret == "" {
-		secret = "mangahub-default-secret-key-2024"
+		return "", time.Time{}, ErrEmptySecret
 	}
 	expiresAt := time.Now().Add(24 * time.Hour)
 	claims := &Claims{
@@ -93,7 +94,7 @@ func GenerateJWT(userID, username, secret string) (string, time.Time, error) {
 // ParseJWT validates a JWT token and extracts claims
 func ParseJWT(tokenString, secret string) (*Claims, error) {
 	if secret == "" {
-		secret = "mangahub-default-secret-key-2024"
+		return nil, ErrEmptySecret
 	}
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {

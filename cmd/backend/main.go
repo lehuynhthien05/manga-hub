@@ -1,18 +1,36 @@
+// Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
+// Phase 1 stub: it only loads and logs its configuration.
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"github.com/joho/godotenv"
+	"mangahub/internal/config"
+	"mangahub/internal/logging"
 )
 
 func main() {
-	fmt.Println("[Backend] HTTP REST & WebSocket listening on port 8080")
-	fmt.Println("[Backend] TCP Progress Sync listening on port 9090")
-	fmt.Println("[Backend] UDP Chapter Alerts listening on port 9091")
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-	fmt.Println("[Backend] Service stopped.")
+	envErr := godotenv.Load() // a real environment variable wins over .env
+	cfg, err := config.LoadBackend(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "backend: invalid configuration:\n"+err.Error())
+		os.Exit(2)
+	}
+	log := logging.New("backend", cfg.LogLevel)
+	if envErr != nil && !errors.Is(envErr, fs.ErrNotExist) {
+		log.Warn("could not read .env", "err", envErr)
+	}
+	if cfg.SecretIsPlaceholder() {
+		log.Warn("JWT_SECRET still has the .env.example value; change it")
+	}
+	// The secret and admin password are deliberately not logged.
+	log.Info("effective config",
+		"http", cfg.HTTPAddr, "tcp", cfg.TCPAddr, "udp", cfg.UDPAddr, "catalog", cfg.CatalogAddr,
+		"grpc_timeout", cfg.GRPCTimeout, "db", cfg.DBPath, "jwt_ttl", cfg.JWTTTL,
+		"admin_user", cfg.AdminUsername, "redis", cfg.RedisEnabled, "redis_addr", cfg.RedisAddr,
+		"cache_ttl", cfg.CacheTTL)
 }
