@@ -38,7 +38,7 @@ func newRouter(t *testing.T, dbPath string) (*gin.Engine, *store.Store) {
 	st := store.New(db)
 	mgr, err := auth.NewManager(secret, time.Hour)
 	require.NoError(t, err)
-	return api.NewRouter(api.Deps{Store: st, Auth: mgr, BcryptCost: bcrypt.MinCost, Log: quiet}), st
+	return api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: &fakeCatalog{}, BcryptCost: bcrypt.MinCost, Log: quiet}), st
 }
 
 func do(r http.Handler, method, path, body string, hdr ...string) *httptest.ResponseRecorder {
