@@ -1,5 +1,5 @@
 // Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
-// Phase 3: HTTP only (accounts, JWT, health).
+// Phases 3-4: HTTP (accounts, JWT, health, manga search via the gRPC catalog).
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
+	"mangahub/internal/backend/catalogclient"
 	"mangahub/internal/backend/store"
 	"mangahub/internal/config"
 	"mangahub/internal/logging"
@@ -67,18 +68,24 @@ func run(cfg config.Backend, log *slog.Logger) error {
 		return err
 	}
 
+	cat, err := catalogclient.New(cfg.CatalogAddr, cfg.GRPCTimeout)
+	if err != nil {
+		return err
+	}
+	defer cat.Close() // runs after srv.Shutdown returns, so no request still uses it
+
 	if cfg.LogLevel != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: WebSocket arrives in Phase 9
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("backend ready", "http", cfg.HTTPAddr, "db", cfg.DBPath)
+	log.Info("backend ready", "http", cfg.HTTPAddr, "db", cfg.DBPath, "catalog", cfg.CatalogAddr)
 
 	select {
 	case err := <-errc:

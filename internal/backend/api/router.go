@@ -13,11 +13,12 @@ import (
 	"mangahub/pkg/protocol"
 )
 
-// Deps are the concrete collaborators main wires in. Later phases add
-// Catalog, ProgressPublisher, ChapterNotifier and the cache here.
+// Deps are the collaborators main wires in. Later phases add
+// ProgressPublisher, ChapterNotifier and the cache here.
 type Deps struct {
 	Store      *store.Store
 	Auth       *auth.Manager
+	Catalog    Catalog
 	BcryptCost int
 	Log        *slog.Logger
 }
@@ -41,6 +42,8 @@ func NewRouter(d Deps) *gin.Engine {
 	r.GET("/api/health", h.health)
 	r.POST("/api/auth/register", h.register)
 	r.POST("/api/auth/login", h.login)
+	r.GET("/api/manga", h.searchManga)
+	r.GET("/api/manga/:id", h.getManga)
 	return r
 }
 
@@ -79,8 +82,12 @@ type handlers struct {
 }
 
 func (h *handlers) health(c *gin.Context) {
-	// catalog is wired in Phase 4, redis in Phase 12.
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "catalog": "unknown", "redis": "disabled"})
+	// Always 200: the backend itself is up; the catalog state is reported, redis arrives in Phase 12.
+	catalog := "down"
+	if h.Catalog.Healthy(c.Request.Context()) {
+		catalog = "up"
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "catalog": catalog, "redis": "disabled"})
 }
 
 func (h *handlers) register(c *gin.Context) {
