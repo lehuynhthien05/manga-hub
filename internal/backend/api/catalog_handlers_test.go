@@ -40,7 +40,10 @@ func (f *fakeCatalog) Get(_ context.Context, id string) (protocol.Manga, error) 
 	if f.err != nil {
 		return protocol.Manga{}, f.err
 	}
-	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}}, nil
+	if id == "nope" {
+		return protocol.Manga{}, api.ErrCatalogNotFound
+	}
+	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: 1100}, nil
 }
 
 func (f *fakeCatalog) UpdateChapters(context.Context, string, int) (protocol.Manga, int, error) {
