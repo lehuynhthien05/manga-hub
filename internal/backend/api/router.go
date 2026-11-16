@@ -14,18 +14,26 @@ import (
 )
 
 // Deps are the collaborators main wires in. Later phases add
-// ProgressPublisher, ChapterNotifier and the cache here.
+// ChapterNotifier and the cache here.
 type Deps struct {
-	Store      *store.Store
-	Auth       *auth.Manager
-	Catalog    Catalog
-	BcryptCost int
-	Log        *slog.Logger
+	Store          *store.Store
+	Auth           *auth.Manager
+	Catalog        Catalog
+	CatalogTimeout time.Duration     // one deadline for a whole library page; 0 means 2 s
+	Publisher      ProgressPublisher // nil means no-op (the TCP hub arrives in Phase 7)
+	BcryptCost     int
+	Log            *slog.Logger
 }
 
 const maxBody = 1 << 20 // 1 MiB per request body
 
 func NewRouter(d Deps) *gin.Engine {
+	if d.Publisher == nil {
+		d.Publisher = noopPublisher{}
+	}
+	if d.CatalogTimeout == 0 {
+		d.CatalogTimeout = 2 * time.Second
+	}
 	h := &handlers{Deps: d}
 	// Unknown users still pay one bcrypt compare, so login timing does not reveal who exists.
 	h.dummyHash, _ = auth.HashPassword("dummy-password-for-timing", d.BcryptCost)
@@ -44,6 +52,11 @@ func NewRouter(d Deps) *gin.Engine {
 	r.POST("/api/auth/login", h.login)
 	r.GET("/api/manga", h.searchManga)
 	r.GET("/api/manga/:id", h.getManga)
+
+	lib := r.Group("/api/library", auth.Middleware(d.Auth, d.Log))
+	lib.POST("", h.addLibrary)
+	lib.GET("", h.listLibrary)
+	lib.PUT("/:mangaId/progress", h.updateProgress)
 	return r
 }
 

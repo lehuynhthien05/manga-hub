@@ -1,5 +1,5 @@
 // Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
-// Phases 3-4: HTTP (accounts, JWT, health, manga search via the gRPC catalog).
+// Phases 3-5: HTTP (accounts, JWT, health, manga search via the gRPC catalog, library).
 package main
 
 import (
@@ -79,7 +79,7 @@ func run(cfg config.Backend, log *slog.Logger) error {
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: WebSocket arrives in Phase 9
 	}
