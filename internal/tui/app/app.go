@@ -49,8 +49,7 @@ type App struct {
 	hints  *tview.TextView
 	log    *slog.Logger
 	api    *client.API
-	tcp    string // backend TCP address; "" disables progress sync (tests)
-	udp    string // backend UDP address; "" disables chapter alerts (tests)
+	addrs  Addrs
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -68,6 +67,7 @@ type App struct {
 	syncGen   int                // drops callbacks from the client of an earlier login
 	token     string             // JWT of this login, in memory only (UDP subscribe needs it)
 	stopUDP   context.CancelFunc // stops the UDP alert client (sends unsubscribe)
+	stopWS    context.CancelFunc // stops the WebSocket chat client (sends a close frame)
 	conns     []ConnState
 	health    client.Health
 	httpOK    bool
@@ -77,6 +77,7 @@ type App struct {
 	libView *LibraryScreen
 	status  *StatusScreen
 	notify  *NotifyScreen
+	chat    *ChatScreen
 }
 
 type modal struct {
@@ -84,10 +85,13 @@ type modal struct {
 	prev tview.Primitive
 }
 
-func New(api *client.API, tcpAddr, udpAddr string, log *slog.Logger) *App {
+// Addrs are the real-time endpoints; an empty one disables that client (tests).
+type Addrs struct{ TCP, UDP, WS string }
+
+func New(api *client.API, addrs Addrs, log *slog.Logger) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
-		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api, tcp: tcpAddr, udp: udpAddr,
+		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api, addrs: addrs,
 		header: tview.NewTextView().SetDynamicColors(true),
 		conn:   tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight),
 		toast:  tview.NewTextView().SetDynamicColors(true),
@@ -97,7 +101,7 @@ func New(api *client.API, tcpAddr, udpAddr string, log *slog.Logger) *App {
 		conns: []ConnState{{"TCP sync", "not started", false}, {"UDP alerts", "not started", false}, {"WS chat", "not started", false}},
 	}
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(tview.NewFlex().AddItem(a.header, 0, 1, false).AddItem(a.conn, 32, 0, false), 1, 0, false).
+		AddItem(tview.NewFlex().AddItem(a.header, 0, 1, false).AddItem(a.conn, 37, 0, false), 1, 0, false).
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.toast, 1, 0, false).
 		AddItem(a.hints, 1, 0, false)
@@ -107,7 +111,8 @@ func New(api *client.API, tcpAddr, udpAddr string, log *slog.Logger) *App {
 	a.libView = newLibraryScreen(a)
 	a.status = newStatusScreen(a)
 	a.notify = newNotifyScreen(a)
-	for _, s := range []Screen{newLoginScreen(a), a.browser, a.libView, a.status, a.notify} {
+	a.chat = newChatScreen(a)
+	for _, s := range []Screen{newLoginScreen(a), a.browser, a.libView, a.status, a.notify, a.chat} {
 		a.screens[s.Name()] = s
 		a.pages.AddPage(s.Name(), s.Root(), true, false)
 	}
@@ -192,7 +197,7 @@ func (a *App) Goto(name string) {
 	a.current = name
 	a.pages.SwitchToPage(name)
 	a.tv.SetFocus(s.Focus())
-	a.hints.SetText(s.Hints() + "   [::d]1 Browser  2 Library  4 Alerts  5/? Help  Ctrl+C Quit")
+	a.hints.SetText(s.Hints() + "   [::d]1-5 screens · ? help")
 	a.renderHeader()
 	s.OnShow(a)
 }
@@ -316,19 +321,20 @@ func (a *App) loggedIn(lr protocol.LoginResponse) {
 	a.token = lr.Token
 	a.startSync(lr.Token)
 	a.startNotify()
+	a.startChat()
 }
 
 // startSync runs the TCP progress-sync client for this login. Its callbacks run on
 // the client's goroutine, so they only Post; the UI goroutine applies the change.
 func (a *App) startSync(token string) {
-	if a.tcp == "" {
+	if a.addrs.TCP == "" {
 		return
 	}
 	a.syncGen++
 	gen := a.syncGen
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.stopSync = cancel
-	c := &client.SyncClient{Addr: a.tcp, Token: token,
+	c := &client.SyncClient{Addr: a.addrs.TCP, Token: token,
 		OnState: func(state, sessionID string, err error) {
 			a.Post(EventFunc(func(a *App) {
 				if gen != a.syncGen {
@@ -359,13 +365,13 @@ func (a *App) startSync(token string) {
 
 // startNotify runs the UDP alert client; like startSync, its callbacks only Post.
 func (a *App) startNotify() {
-	if a.udp == "" || a.stopUDP != nil {
+	if a.addrs.UDP == "" || a.stopUDP != nil {
 		return
 	}
 	gen := a.syncGen
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.stopUDP = cancel
-	c := &client.NotifyClient{Addr: a.udp, Token: a.token,
+	c := &client.NotifyClient{Addr: a.addrs.UDP, Token: a.token,
 		OnState: func(state string, err error) {
 			a.Post(EventFunc(func(a *App) {
 				if gen != a.syncGen || a.stopUDP == nil {
@@ -411,7 +417,52 @@ func (a *App) toggleNotify() {
 	a.notify.render()
 }
 
+// startChat runs the WebSocket chat client; its callbacks only Post.
+func (a *App) startChat() {
+	if a.addrs.WS == "" {
+		return
+	}
+	gen := a.syncGen
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.stopWS = cancel
+	wasUp := false
+	c := &client.ChatClient{URL: a.addrs.WS, Token: a.token,
+		OnState: func(state string, err error) {
+			a.Post(EventFunc(func(a *App) {
+				if gen != a.syncGen {
+					return
+				}
+				a.conns[2].OK, a.conns[2].State = state == client.StateConnected, state
+				if err != nil {
+					a.conns[2].State += " · " + err.Error()
+					a.log.Info("ws chat", "state", state, "err", err)
+				}
+				if state == client.StateConnected && wasUp {
+					a.chat.reconnected()
+				}
+				wasUp = wasUp || state == client.StateConnected
+				a.renderHeader()
+				a.status.render(a)
+			}))
+		},
+		OnFrame: func(raw []byte) {
+			a.Post(EventFunc(func(a *App) {
+				if gen == a.syncGen {
+					a.chat.onFrame(raw)
+				}
+			}))
+		}}
+	a.chat.chat = c
+	go c.Run(ctx)
+}
+
 func (a *App) stopRealtime() {
+	if a.stopWS != nil {
+		a.stopWS()
+		a.stopWS = nil
+	}
+	a.chat.reset()
+	a.conns[2] = ConnState{"WS chat", "not started", false}
 	a.stopNotify("not started")
 	a.token = ""
 	if a.stopSync != nil {
@@ -454,14 +505,14 @@ func (a *App) renderHeader() {
 	}
 	busy := ""
 	if a.notify != nil && a.notify.unread > 0 {
-		busy += fmt.Sprintf(" · [yellow]4: %d new alert(s)[-]", a.notify.unread)
+		busy += fmt.Sprintf(" · [yellow]4:%d new[-]", a.notify.unread) // short: the header must fit 80 columns
 	}
 	if a.busy > 0 {
 		busy += " [yellow]…[-]"
 	}
 	a.header.SetText(fmt.Sprintf(" [::b]MangaHub[::-] · %s · %s%s", user, a.current, busy))
 	a.conn.SetText(dot("HTTP", a.httpOK) + " " + dot("catalog", a.httpOK && a.health.Catalog == "up") + " " +
-		dot("TCP", a.conns[0].OK) + " " + dot("UDP", a.conns[1].OK) + " ")
+		dot("TCP", a.conns[0].OK) + " " + dot("UDP", a.conns[1].OK) + " " + dot("WS", a.conns[2].OK) + " ")
 }
 
 func dot(label string, ok bool) string {
