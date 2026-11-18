@@ -21,7 +21,7 @@ type Deps struct {
 	CatalogTimeout time.Duration     // one deadline for a whole library page; 0 means 2 s
 	Publisher      ProgressPublisher // nil means no-op
 	Notifier       ChapterNotifier   // UDP new-chapter alerts; nil means no-op
-	Cache          CacheInvalidator  // Redis (Phase 12); nil means no-op
+	Cache          MangaCache        // Redis cache-aside; nil means caching is off (no X-Cache header)
 	Chat           gin.HandlerFunc   // WebSocket chat upgrade (chatws.Hub.Serve); nil means no /ws route
 	BcryptCost     int
 	Log            *slog.Logger
@@ -35,9 +35,6 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 	if d.Notifier == nil {
 		d.Notifier = noopNotifier{}
-	}
-	if d.Cache == nil {
-		d.Cache = noopCache{}
 	}
 	if d.CatalogTimeout == 0 {
 		d.CatalogTimeout = 2 * time.Second
@@ -110,12 +107,18 @@ type handlers struct {
 }
 
 func (h *handlers) health(c *gin.Context) {
-	// Always 200: the backend itself is up; the catalog state is reported, redis arrives in Phase 12.
-	catalog := "down"
+	// Always 200: the backend itself is up; the catalog and Redis states are reported.
+	catalog, redis := "down", "disabled"
 	if h.Catalog.Healthy(c.Request.Context()) {
 		catalog = "up"
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "catalog": catalog, "redis": "disabled"})
+	if h.Cache != nil {
+		redis = "up"
+		if h.Cache.Ping(c.Request.Context()) != nil {
+			redis = "down"
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "catalog": catalog, "redis": redis})
 }
 
 func (h *handlers) register(c *gin.Context) {
