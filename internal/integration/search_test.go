@@ -26,6 +26,7 @@ import (
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
 	"mangahub/internal/backend/store"
+	"mangahub/internal/backend/synctcp"
 	"mangahub/internal/catalog"
 	"mangahub/internal/testutil"
 	"mangahub/pkg/database"
@@ -55,6 +56,14 @@ func serveCatalog(t *testing.T, addr string) (*grpc.Server, string) {
 
 func backend(t *testing.T, catalogAddr string, timeout time.Duration) http.Handler {
 	t.Helper()
+	h, _ := newBackend(t, catalogAddr, timeout, false)
+	return h
+}
+
+// newBackend builds the real router; withTCP also runs the real TCP hub on
+// 127.0.0.1:0 as its ProgressPublisher and returns that address.
+func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withTCP bool) (http.Handler, string) {
+	t.Helper()
 	cat, err := catalogclient.New(catalogAddr, timeout)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cat.Close() })
@@ -64,7 +73,18 @@ func backend(t *testing.T, catalogAddr string, timeout time.Duration) http.Handl
 	require.NoError(t, store.Migrate(t.Context(), db))
 	mgr, err := auth.NewManager("test-secret-0123456789", time.Hour)
 	require.NoError(t, err)
-	return api.NewRouter(api.Deps{Store: store.New(db), Auth: mgr, Catalog: cat, BcryptCost: bcrypt.MinCost, Log: quiet})
+	deps := api.Deps{Store: store.New(db), Auth: mgr, Catalog: cat, BcryptCost: bcrypt.MinCost, Log: quiet}
+	tcpAddr := ""
+	if withTCP {
+		ln := testutil.ListenLoopback(t)
+		tcp := synctcp.NewServer(mgr, synctcp.DefaultLimits(), quiet)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _ = tcp.Serve(ctx, ln); close(done) }()
+		t.Cleanup(func() { cancel(); <-done })
+		deps.Publisher, tcpAddr = tcp.Hub(), ln.Addr().String()
+	}
+	return api.NewRouter(deps), tcpAddr
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {
