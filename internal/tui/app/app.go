@@ -50,6 +50,7 @@ type App struct {
 	log    *slog.Logger
 	api    *client.API
 	tcp    string // backend TCP address; "" disables progress sync (tests)
+	udp    string // backend UDP address; "" disables chapter alerts (tests)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,6 +66,8 @@ type App struct {
 	sessionID string             // TCP session id for X-Session-ID; empty while disconnected
 	stopSync  context.CancelFunc // stops the TCP client of the current login
 	syncGen   int                // drops callbacks from the client of an earlier login
+	token     string             // JWT of this login, in memory only (UDP subscribe needs it)
+	stopUDP   context.CancelFunc // stops the UDP alert client (sends unsubscribe)
 	conns     []ConnState
 	health    client.Health
 	httpOK    bool
@@ -73,6 +76,7 @@ type App struct {
 	browser *Browser
 	libView *LibraryScreen
 	status  *StatusScreen
+	notify  *NotifyScreen
 }
 
 type modal struct {
@@ -80,10 +84,10 @@ type modal struct {
 	prev tview.Primitive
 }
 
-func New(api *client.API, tcpAddr string, log *slog.Logger) *App {
+func New(api *client.API, tcpAddr, udpAddr string, log *slog.Logger) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
-		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api, tcp: tcpAddr,
+		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api, tcp: tcpAddr, udp: udpAddr,
 		header: tview.NewTextView().SetDynamicColors(true),
 		conn:   tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight),
 		toast:  tview.NewTextView().SetDynamicColors(true),
@@ -102,7 +106,8 @@ func New(api *client.API, tcpAddr string, log *slog.Logger) *App {
 	a.browser = newBrowser(a)
 	a.libView = newLibraryScreen(a)
 	a.status = newStatusScreen(a)
-	for _, s := range []Screen{newLoginScreen(a), a.browser, a.libView, a.status} {
+	a.notify = newNotifyScreen(a)
+	for _, s := range []Screen{newLoginScreen(a), a.browser, a.libView, a.status, a.notify} {
 		a.screens[s.Name()] = s
 		a.pages.AddPage(s.Name(), s.Root(), true, false)
 	}
@@ -187,7 +192,7 @@ func (a *App) Goto(name string) {
 	a.current = name
 	a.pages.SwitchToPage(name)
 	a.tv.SetFocus(s.Focus())
-	a.hints.SetText(s.Hints() + "   [::d]1 Browser  2 Library  5/? Status & Help  Ctrl+C Quit")
+	a.hints.SetText(s.Hints() + "   [::d]1 Browser  2 Library  4 Alerts  5/? Help  Ctrl+C Quit")
 	a.renderHeader()
 	s.OnShow(a)
 }
@@ -308,7 +313,9 @@ func (a *App) loggedIn(lr protocol.LoginResponse) {
 	a.log.Info("logged in", "user", lr.User.Username) // never the token
 	a.Goto("browser")
 	a.Success("Welcome, " + lr.User.Username)
+	a.token = lr.Token
 	a.startSync(lr.Token)
+	a.startNotify()
 }
 
 // startSync runs the TCP progress-sync client for this login. Its callbacks run on
@@ -350,7 +357,63 @@ func (a *App) startSync(token string) {
 	go c.Run(ctx)
 }
 
+// startNotify runs the UDP alert client; like startSync, its callbacks only Post.
+func (a *App) startNotify() {
+	if a.udp == "" || a.stopUDP != nil {
+		return
+	}
+	gen := a.syncGen
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.stopUDP = cancel
+	c := &client.NotifyClient{Addr: a.udp, Token: a.token,
+		OnState: func(state string, err error) {
+			a.Post(EventFunc(func(a *App) {
+				if gen != a.syncGen || a.stopUDP == nil {
+					return
+				}
+				a.conns[1].OK, a.conns[1].State = state == client.UDPSubscribed, state
+				if err != nil {
+					a.log.Info("udp alerts", "state", state, "err", err)
+				}
+				a.renderHeader()
+				a.notify.render()
+				a.status.render(a)
+			}))
+		},
+		OnEvent: func(ev protocol.NewChapter) {
+			a.Post(EventFunc(func(a *App) {
+				if gen == a.syncGen {
+					a.notify.add(ev)
+					a.renderHeader()
+				}
+			}))
+		}}
+	go c.Run(ctx)
+}
+
+func (a *App) stopNotify(state string) {
+	if a.stopUDP != nil {
+		a.stopUDP() // the client sends a best-effort unsubscribe
+		a.stopUDP = nil
+	}
+	a.conns[1] = ConnState{"UDP alerts", state, false}
+}
+
+// toggleNotify is the Notifications screen's "s" key.
+func (a *App) toggleNotify() {
+	if a.stopUDP != nil {
+		a.stopNotify("unsubscribed")
+		a.Info("Unsubscribed from chapter alerts")
+	} else {
+		a.startNotify()
+	}
+	a.renderHeader()
+	a.notify.render()
+}
+
 func (a *App) stopRealtime() {
+	a.stopNotify("not started")
+	a.token = ""
 	if a.stopSync != nil {
 		a.stopSync()
 		a.stopSync = nil
@@ -390,12 +453,15 @@ func (a *App) renderHeader() {
 		user = tview.Escape(a.user.Username)
 	}
 	busy := ""
+	if a.notify != nil && a.notify.unread > 0 {
+		busy += fmt.Sprintf(" · [yellow]4: %d new alert(s)[-]", a.notify.unread)
+	}
 	if a.busy > 0 {
-		busy = " [yellow]…[-]"
+		busy += " [yellow]…[-]"
 	}
 	a.header.SetText(fmt.Sprintf(" [::b]MangaHub[::-] · %s · %s%s", user, a.current, busy))
 	a.conn.SetText(dot("HTTP", a.httpOK) + " " + dot("catalog", a.httpOK && a.health.Catalog == "up") + " " +
-		dot("TCP", a.conns[0].OK) + " ")
+		dot("TCP", a.conns[0].OK) + " " + dot("UDP", a.conns[1].OK) + " ")
 }
 
 func dot(label string, ok bool) string {

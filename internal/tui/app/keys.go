@@ -7,7 +7,9 @@ var globalKeys = map[rune]string{'1': "browser", '2': "library", '3': "chat", '4
 // keyHelp is the single table the footer hints and the Help screen read from.
 var keyHelp = []struct{ Scope, Keys, Action string }{
 	{"Global", "1 / 2", "Manga Browser / My Library"},
-	{"Global", "3 / 4", "Discussion / Notifications (later phases)"},
+	{"Global", "3 / 4", "Discussion (later phase) / Notifications"},
+	{"Notify", "c / s", "clear the list / subscribe or unsubscribe"},
+	{"Notify", "Enter", "open the manga in the Browser"},
 	{"Global", "5 or ?", "Connection Status & Help"},
 	{"Global", "Esc", "leave a field or close a dialog"},
 	{"Global", "Ctrl+C", "quit (asks first)"},

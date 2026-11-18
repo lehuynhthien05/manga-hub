@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,9 +26,11 @@ import (
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
+	"mangahub/internal/backend/notifyudp"
 	"mangahub/internal/backend/store"
 	"mangahub/internal/backend/synctcp"
 	"mangahub/internal/catalog"
+	"mangahub/internal/clock"
 	"mangahub/internal/testutil"
 	"mangahub/pkg/database"
 	"mangahub/pkg/protocol"
@@ -60,9 +63,12 @@ func backend(t *testing.T, catalogAddr string, timeout time.Duration) http.Handl
 	return h
 }
 
-// newBackend builds the real router; withTCP also runs the real TCP hub on
-// 127.0.0.1:0 as its ProgressPublisher and returns that address.
-func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withTCP bool) (http.Handler, string) {
+// realtime holds the addresses of the real TCP hub and UDP notifier.
+type realtime struct{ tcp, udp string }
+
+// newBackend builds the real router with an admin account (admin / Admin12345).
+// withRealtime also runs the real TCP hub and UDP notifier on loopback ports.
+func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withRealtime bool) (http.Handler, realtime) {
 	t.Helper()
 	cat, err := catalogclient.New(catalogAddr, timeout)
 	require.NoError(t, err)
@@ -71,20 +77,30 @@ func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withTCP
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	require.NoError(t, store.Migrate(t.Context(), db))
+	st := store.New(db)
+	hash, err := auth.HashPassword("Admin12345", bcrypt.MinCost)
+	require.NoError(t, err)
+	_, err = st.CreateUser(t.Context(), "admin", hash, protocol.RoleAdmin)
+	require.NoError(t, err)
 	mgr, err := auth.NewManager("test-secret-0123456789", time.Hour)
 	require.NoError(t, err)
-	deps := api.Deps{Store: store.New(db), Auth: mgr, Catalog: cat, BcryptCost: bcrypt.MinCost, Log: quiet}
-	tcpAddr := ""
-	if withTCP {
+	deps := api.Deps{Store: st, Auth: mgr, Catalog: cat, BcryptCost: bcrypt.MinCost, Log: quiet}
+	var rt realtime
+	if withRealtime {
+		ctx, cancel := context.WithCancel(context.Background())
 		ln := testutil.ListenLoopback(t)
 		tcp := synctcp.NewServer(mgr, synctcp.DefaultLimits(), quiet)
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() { _ = tcp.Serve(ctx, ln); close(done) }()
-		t.Cleanup(func() { cancel(); <-done })
-		deps.Publisher, tcpAddr = tcp.Hub(), ln.Addr().String()
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		require.NoError(t, err)
+		udp := notifyudp.NewServer(mgr, clock.System{}, quiet)
+		var wg sync.WaitGroup
+		wg.Go(func() { _ = tcp.Serve(ctx, ln) })
+		wg.Go(func() { _ = udp.Serve(ctx, pc) })
+		t.Cleanup(func() { cancel(); wg.Wait() })
+		deps.Publisher, deps.Notifier = tcp.Hub(), udp
+		rt = realtime{ln.Addr().String(), pc.LocalAddr().String()}
 	}
-	return api.NewRouter(deps), tcpAddr
+	return api.NewRouter(deps), rt
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {

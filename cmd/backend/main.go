@@ -1,6 +1,6 @@
 // Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
 // Phases 3-7: HTTP (accounts, JWT, health, manga search via the gRPC catalog, library)
-// and the TCP progress-sync hub.
+// the TCP progress-sync hub and the UDP new-chapter notifier.
 package main
 
 import (
@@ -22,8 +22,10 @@ import (
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
+	"mangahub/internal/backend/notifyudp"
 	"mangahub/internal/backend/store"
 	"mangahub/internal/backend/synctcp"
+	"mangahub/internal/clock"
 	"mangahub/internal/config"
 	"mangahub/internal/logging"
 	"mangahub/pkg/database"
@@ -82,23 +84,32 @@ func run(cfg config.Backend, log *slog.Logger) error {
 		return err
 	}
 	tcp := synctcp.NewServer(mgr, synctcp.DefaultLimits(), log)
-	tcpCtx, stopTCP := context.WithCancel(ctx)
+	rtCtx, stopRT := context.WithCancel(ctx) // stops the real-time servers (TCP, UDP)
 	tcpDone := make(chan error, 1)
-	go func() { tcpDone <- tcp.Serve(tcpCtx, tcpLn) }()
-	defer func() { stopTCP(); <-tcpDone }() // closes every session and waits for its goroutines
+	go func() { tcpDone <- tcp.Serve(rtCtx, tcpLn) }()
+	defer func() { stopRT(); <-tcpDone }() // closes every session and waits for its goroutines
+
+	udpConn, err := net.ListenPacket("udp", cfg.UDPAddr)
+	if err != nil {
+		return err
+	}
+	udp := notifyudp.NewServer(mgr, clock.System{}, log)
+	udpDone := make(chan error, 1)
+	go func() { udpDone <- udp.Serve(rtCtx, udpConn) }()
+	defer func() { stopRT(); <-udpDone }() // the same context stops both real-time servers
 
 	if cfg.LogLevel != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), Notifier: udp, BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: WebSocket arrives in Phase 9
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("backend ready", "http", cfg.HTTPAddr, "tcp", tcpLn.Addr().String(), "db", cfg.DBPath, "catalog", cfg.CatalogAddr)
+	log.Info("backend ready", "http", cfg.HTTPAddr, "tcp", tcpLn.Addr().String(), "udp", udpConn.LocalAddr().String(), "db", cfg.DBPath, "catalog", cfg.CatalogAddr)
 
 	select {
 	case err := <-errc:

@@ -46,8 +46,17 @@ func (f *fakeCatalog) Get(_ context.Context, id string) (protocol.Manga, error) 
 	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: 1100}, nil
 }
 
-func (f *fakeCatalog) UpdateChapters(context.Context, string, int) (protocol.Manga, int, error) {
-	return protocol.Manga{}, 0, f.err
+// UpdateChapters behaves like the catalog for a manga with 1100 chapters.
+func (f *fakeCatalog) UpdateChapters(_ context.Context, id string, total int) (protocol.Manga, int, error) {
+	switch {
+	case f.err != nil:
+		return protocol.Manga{}, 0, f.err
+	case id == "nope":
+		return protocol.Manga{}, 0, api.ErrCatalogNotFound
+	case total <= 1100:
+		return protocol.Manga{}, 0, api.ErrCatalogConflict
+	}
+	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: total}, 1100, nil
 }
 
 func (f *fakeCatalog) Healthy(context.Context) bool { return f.healthy }
