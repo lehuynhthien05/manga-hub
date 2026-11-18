@@ -49,6 +49,7 @@ type App struct {
 	hints  *tview.TextView
 	log    *slog.Logger
 	api    *client.API
+	tcp    string // backend TCP address; "" disables progress sync (tests)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -61,7 +62,9 @@ type App struct {
 	toastID int
 
 	user      protocol.User
-	sessionID string // TCP session id for X-Session-ID; empty until Phase 7
+	sessionID string             // TCP session id for X-Session-ID; empty while disconnected
+	stopSync  context.CancelFunc // stops the TCP client of the current login
+	syncGen   int                // drops callbacks from the client of an earlier login
 	conns     []ConnState
 	health    client.Health
 	httpOK    bool
@@ -77,10 +80,10 @@ type modal struct {
 	prev tview.Primitive
 }
 
-func New(api *client.API, log *slog.Logger) *App {
+func New(api *client.API, tcpAddr string, log *slog.Logger) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &App{
-		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api,
+		tv: tview.NewApplication(), pages: tview.NewPages(), log: log, api: api, tcp: tcpAddr,
 		header: tview.NewTextView().SetDynamicColors(true),
 		conn:   tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight),
 		toast:  tview.NewTextView().SetDynamicColors(true),
@@ -90,7 +93,7 @@ func New(api *client.API, log *slog.Logger) *App {
 		conns: []ConnState{{"TCP sync", "not started", false}, {"UDP alerts", "not started", false}, {"WS chat", "not started", false}},
 	}
 	root := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(tview.NewFlex().AddItem(a.header, 0, 1, false).AddItem(a.conn, 24, 0, false), 1, 0, false).
+		AddItem(tview.NewFlex().AddItem(a.header, 0, 1, false).AddItem(a.conn, 32, 0, false), 1, 0, false).
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.toast, 1, 0, false).
 		AddItem(a.hints, 1, 0, false)
@@ -142,7 +145,23 @@ func (a *App) dispatch() {
 	for {
 		select {
 		case ev := <-a.events:
-			a.tv.QueueUpdateDraw(func() { ev.Apply(a) })
+			// QueueUpdateDraw waits for a full redraw, so take everything already queued
+			// (in order) and draw once: a burst of events then costs one frame, not one each.
+			batch := []Event{ev}
+		drain:
+			for len(batch) < cap(a.events) {
+				select {
+				case ev := <-a.events:
+					batch = append(batch, ev)
+				default:
+					break drain
+				}
+			}
+			a.tv.QueueUpdateDraw(func() {
+				for _, ev := range batch {
+					ev.Apply(a)
+				}
+			})
 		case <-a.ctx.Done():
 			return
 		}
@@ -274,13 +293,14 @@ func (a *App) Fail(err error) {
 }
 
 func (a *App) Logout() {
+	a.stopRealtime()
 	a.api.Clear()
 	a.user = protocol.User{}
 	a.library.Replace(nil)
 	for len(a.modals) > 0 {
 		a.CloseModal(a.modals[len(a.modals)-1].name)
 	}
-	a.Goto("login") // the real-time clients (Phases 7–9) are stopped here
+	a.Goto("login")
 }
 
 func (a *App) loggedIn(lr protocol.LoginResponse) {
@@ -288,7 +308,75 @@ func (a *App) loggedIn(lr protocol.LoginResponse) {
 	a.log.Info("logged in", "user", lr.User.Username) // never the token
 	a.Goto("browser")
 	a.Success("Welcome, " + lr.User.Username)
-	// Real-time start hook: TCP/UDP/WS clients start here in Phases 7–9.
+	a.startSync(lr.Token)
+}
+
+// startSync runs the TCP progress-sync client for this login. Its callbacks run on
+// the client's goroutine, so they only Post; the UI goroutine applies the change.
+func (a *App) startSync(token string) {
+	if a.tcp == "" {
+		return
+	}
+	a.syncGen++
+	gen := a.syncGen
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.stopSync = cancel
+	c := &client.SyncClient{Addr: a.tcp, Token: token,
+		OnState: func(state, sessionID string, err error) {
+			a.Post(EventFunc(func(a *App) {
+				if gen != a.syncGen {
+					return
+				}
+				a.sessionID = sessionID
+				a.conns[0].OK, a.conns[0].State = state == client.StateConnected, state
+				if sessionID != "" {
+					a.conns[0].State += " · " + sessionID
+				}
+				if err != nil {
+					a.conns[0].State += " · " + err.Error()
+					a.log.Info("tcp sync", "state", state, "err", err)
+				}
+				a.renderHeader()
+				a.status.render(a)
+			}))
+		},
+		OnEvent: func(ev protocol.ProgressUpdated) {
+			a.Post(EventFunc(func(a *App) {
+				if gen == a.syncGen {
+					a.onProgress(ev)
+				}
+			}))
+		}}
+	go c.Run(ctx)
+}
+
+func (a *App) stopRealtime() {
+	if a.stopSync != nil {
+		a.stopSync()
+		a.stopSync = nil
+	}
+	a.syncGen++
+	a.sessionID = ""
+	a.conns[0] = ConnState{"TCP sync", "not started", false}
+}
+
+// onProgress applies a progress_updated pushed by another session of this user.
+// Stale events and echoes (version <= known) and unknown manga change nothing;
+// the Library reloads from HTTP on every visit anyway.
+func (a *App) onProgress(ev protocol.ProgressUpdated) {
+	if !a.library.ApplyProgress(ev) {
+		return
+	}
+	if a.current == "library" {
+		a.libView.render()
+	}
+	it, _ := a.library.Get(ev.MangaID)
+	title := it.MangaID
+	if it.Manga != nil {
+		title = it.Manga.Title
+	}
+	a.conns[0].State = fmt.Sprintf("connected · %s · last event %s", a.sessionID, time.Now().Format("15:04:05"))
+	a.Info(fmt.Sprintf("Synced from another session: %s → ch. %d", title, ev.Chapter))
 }
 
 func (a *App) setBusy(d int) {
@@ -306,7 +394,8 @@ func (a *App) renderHeader() {
 		busy = " [yellow]…[-]"
 	}
 	a.header.SetText(fmt.Sprintf(" [::b]MangaHub[::-] · %s · %s%s", user, a.current, busy))
-	a.conn.SetText(dot("HTTP", a.httpOK) + " " + dot("catalog", a.httpOK && a.health.Catalog == "up") + " ")
+	a.conn.SetText(dot("HTTP", a.httpOK) + " " + dot("catalog", a.httpOK && a.health.Catalog == "up") + " " +
+		dot("TCP", a.conns[0].OK) + " ")
 }
 
 func dot(label string, ok bool) string {

@@ -58,6 +58,30 @@ func (s *screen) keys(text string) {
 
 func (s *screen) key(k tcell.Key, mod tcell.ModMask) { s.sim.InjectKey(k, 0, mod) }
 
+// startTUI runs a real TUI on its own 80×24 simulation screen.
+func startTUI(t *testing.T, apiURL, tcpAddr string) *screen {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	require.NoError(t, sim.Init())
+	sim.SetSize(80, 24)
+	a := app.New(client.NewAPI(apiURL), tcpAddr, quiet)
+	a.SetScreen(sim)
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+	t.Cleanup(func() { a.Quit(); <-done })
+	return &screen{t, a, sim}
+}
+
+func (s *screen) login(user, pw string) {
+	s.t.Helper()
+	s.waitFor("MangaHub — Login")
+	s.keys(user)
+	s.key(tcell.KeyTab, 0)
+	s.keys(pw)
+	s.key(tcell.KeyEnter, 0)
+	s.waitFor(user + " · browser")
+}
+
 // Gate 6 steps 5–12 against the real backend router and the real catalog over gRPC.
 func TestTUI_AgainstRealBackend(t *testing.T) {
 	cat, addr := serveCatalog(t, "127.0.0.1:0")
@@ -69,16 +93,7 @@ func TestTUI_AgainstRealBackend(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	_ = resp.Body.Close()
 
-	sim := tcell.NewSimulationScreen("UTF-8")
-	require.NoError(t, sim.Init())
-	sim.SetSize(80, 24)
-	a := app.New(client.NewAPI(srv.URL), quiet)
-	a.SetScreen(sim)
-	done := make(chan error, 1)
-	go func() { done <- a.Run() }()
-	t.Cleanup(func() { a.Quit(); <-done })
-	s := &screen{t, a, sim}
-
+	s := startTUI(t, srv.URL, "")
 	s.waitFor("MangaHub — Login")
 	s.keys("alice")
 	s.key(tcell.KeyTab, 0)
