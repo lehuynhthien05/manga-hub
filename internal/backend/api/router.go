@@ -13,14 +13,15 @@ import (
 	"mangahub/pkg/protocol"
 )
 
-// Deps are the collaborators main wires in. Later phases add
-// ChapterNotifier and the cache here.
+// Deps are the collaborators main wires in.
 type Deps struct {
 	Store          *store.Store
 	Auth           *auth.Manager
 	Catalog        Catalog
 	CatalogTimeout time.Duration     // one deadline for a whole library page; 0 means 2 s
-	Publisher      ProgressPublisher // nil means no-op (the TCP hub arrives in Phase 7)
+	Publisher      ProgressPublisher // nil means no-op
+	Notifier       ChapterNotifier   // UDP new-chapter alerts; nil means no-op
+	Cache          CacheInvalidator  // Redis (Phase 12); nil means no-op
 	BcryptCost     int
 	Log            *slog.Logger
 }
@@ -30,6 +31,12 @@ const maxBody = 1 << 20 // 1 MiB per request body
 func NewRouter(d Deps) *gin.Engine {
 	if d.Publisher == nil {
 		d.Publisher = noopPublisher{}
+	}
+	if d.Notifier == nil {
+		d.Notifier = noopNotifier{}
+	}
+	if d.Cache == nil {
+		d.Cache = noopCache{}
 	}
 	if d.CatalogTimeout == 0 {
 		d.CatalogTimeout = 2 * time.Second
@@ -57,6 +64,9 @@ func NewRouter(d Deps) *gin.Engine {
 	lib.POST("", h.addLibrary)
 	lib.GET("", h.listLibrary)
 	lib.PUT("/:mangaId/progress", h.updateProgress)
+
+	admin := r.Group("/api/admin", auth.Middleware(d.Auth, d.Log), auth.RequireAdmin())
+	admin.POST("/manga/:id/release", h.release)
 	return r
 }
 
