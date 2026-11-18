@@ -3,10 +3,12 @@ package notifyudp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,4 +158,32 @@ func TestUDP_NotifyBeforeServe(t *testing.T) {
 func TestUDP_DatagramIsSmall(t *testing.T) {
 	b, _ := json.Marshal(protocol.NewChapter{Type: "new_chapter", MangaID: strings.Repeat("a", 64), Title: strings.Repeat("ワ", 60), Chapter: 99999})
 	assert.Less(t, len(b), 512)
+}
+
+// Stress (-short skips it): 20 sockets subscribe while 20 goroutines Notify; -race stays quiet.
+func TestStress_UDPSubscribeWhileNotify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress")
+	}
+	e := start(t)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		p := e.peer(t)
+		wg.Go(func() {
+			tok, _, _ := e.mgr.Issue(fmt.Sprintf("u%d", i), "u", "user")
+			p.send(t, `{"type":"subscribe","token":"`+tok+`"}`)
+			// A Notify may arrive before "subscribed": the address is registered just
+			// before the reply is sent (and UDP promises no ordering anyway).
+			for !strings.Contains(p.recv(t), `"subscribed"`) {
+			}
+		})
+		wg.Go(func() {
+			for range 20 {
+				e.srv.Notify(ev)
+			}
+		})
+	}
+	wg.Wait()
+	assert.Equal(t, 20, e.srv.Count())
+	assert.Equal(t, 20, e.srv.Notify(ev))
 }

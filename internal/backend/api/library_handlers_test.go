@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -232,4 +234,37 @@ func TestLibrary_PersistsAcrossRestart(t *testing.T) {
 	require.Len(t, lr.Items, 1)
 	assert.Equal(t, 25, lr.Items[0].CurrentChapter)
 	assert.Equal(t, 2, lr.Items[0].Version)
+}
+
+// Property: for a random number N of concurrent updates on one entry, the returned
+// versions are exactly {2..N+1} and the stored version ends at N+1.
+func TestProgress_VersionsGapFreeUnderConcurrency(t *testing.T) {
+	rng := rand.New(rand.NewPCG(2026, 11)) // seeded so a failure can be replayed
+	for round := range 5 {
+		n := 1 + rng.IntN(50)
+		t.Run(fmt.Sprintf("round%d_N%d", round, n), func(t *testing.T) {
+			e := newLibEnv(t, filepath.Join(t.TempDir(), "b.db"))
+			a := e.loginAs(t, "alice")
+			require.Equal(t, http.StatusCreated, do(e.r, "POST", "/api/library", `{"manga_id":"one-piece"}`, a...).Code)
+			versions := make([]int, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Go(func() {
+					w := do(e.r, "PUT", "/api/library/one-piece/progress", `{"current_chapter":`+strconv.Itoa(i)+`}`, a...)
+					var it protocol.LibraryItem
+					if assert.Equal(t, http.StatusOK, w.Code) && json.Unmarshal(w.Body.Bytes(), &it) == nil {
+						versions[i] = it.Version
+					}
+				})
+			}
+			wg.Wait()
+			sort.Ints(versions)
+			for i, v := range versions {
+				require.Equal(t, i+2, v, "gap-free and unique")
+			}
+			var lr protocol.LibraryResponse
+			require.NoError(t, json.Unmarshal(do(e.r, "GET", "/api/library", "", a...).Body.Bytes(), &lr))
+			assert.Equal(t, n+1, lr.Items[0].Version, "stored version = N+1")
+		})
+	}
 }

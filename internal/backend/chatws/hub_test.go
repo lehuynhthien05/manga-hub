@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -273,8 +274,15 @@ func TestHub_StalledClientDoesNotBlock(t *testing.T) {
 		return c
 	}
 	stalled, healthy, sender := mk("stalled"), mk("healthy"), mk("sender")
-	go func() { // sender's own echoes must not fill up its buffer either
-		for range sender.send {
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() { // sender's own echoes must not fill up its buffer either; send is never closed, so stop on test end
+		for {
+			select {
+			case <-sender.send:
+			case <-stop:
+				return
+			}
 		}
 	}()
 	got := 0
@@ -338,4 +346,98 @@ func TestCleanText(t *testing.T) {
 	assert.Equal(t, "[31mred [red]boom[-]", got, "control bytes go; tview tags stay text (the TUI escapes them)")
 	_, err = cleanText("\n\t ", 500)
 	assert.ErrorIs(t, err, ErrBadText)
+}
+
+// A flooding client is rate-limited while another member's probe still round-trips fast.
+func TestWS_FloodRateLimited(t *testing.T) {
+	e := start(t, DefaultLimits())
+	flooder, probe := e.dial(t, "flooder"), e.dial(t, "probe")
+	flooder.join("general")
+	probe.join("general")
+	done := make(chan struct{})
+	go func() { // the flood runs while we measure
+		defer close(done)
+		for i := range 1000 {
+			if flooder.conn.WriteJSON(chat("general", fmt.Sprintf("flood %d", i))) != nil {
+				return
+			}
+		}
+	}()
+	var worst time.Duration
+	for i := range 5 {
+		text := fmt.Sprintf("probe %d", i)
+		begin := time.Now()
+		probe.send(chat("general", text))
+		for probe.readType("chat")["text"] != text { // skip the flood lines that got through
+		}
+		worst = max(worst, time.Since(begin))
+	}
+	<-done
+	limited := 0
+	for quiet := false; !quiet; {
+		select {
+		case m, ok := <-flooder.frames:
+			if ok && m["type"] == "error" {
+				limited++
+			}
+			quiet = !ok
+		case <-time.After(300 * time.Millisecond): // waiting for the absence of more frames
+			quiet = true
+		}
+	}
+	t.Logf("flood: %d 'slow down' replies seen by the flooder; worst probe round-trip %v", limited, worst.Round(time.Microsecond))
+	assert.Positive(t, limited, "the flood is rate-limited")
+	assert.Less(t, worst, 200*time.Millisecond, "other members are not slowed down")
+}
+
+// Stress (-short skips it): 50 clients doing seeded random joins, leaves, chats and
+// abrupt disconnects; the hub ends empty and -race stays quiet.
+func TestStress_WSRandomJoinLeaveDisconnect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress")
+	}
+	lim := DefaultLimits()
+	lim.MsgRate, lim.MsgBurst = 1e6, 1e6
+	e := start(t, lim)
+	rooms := []string{"a", "b", "c", "d"}
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Go(func() {
+			rng := rand.New(rand.NewPCG(uint64(i), 13)) // seeded: the same run every time
+			tok, _, _ := e.mgr.Issue(fmt.Sprintf("u%d", i), fmt.Sprintf("u%d", i), "user")
+			conn, _, err := websocket.DefaultDialer.Dial(e.url, http.Header{"Authorization": {"Bearer " + tok}})
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer conn.Close()
+			go func() { // drain until the connection ends
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}()
+			for range 40 {
+				room := rooms[rng.IntN(len(rooms))]
+				var err error
+				switch rng.IntN(10) {
+				case 0:
+					_ = conn.UnderlyingConn().Close() // vanish without a close frame
+					return
+				case 1, 2:
+					err = conn.WriteJSON(protocol.WSJoin{Type: "join", Room: room})
+				case 3:
+					err = conn.WriteJSON(protocol.WSLeave{Type: "leave", Room: room})
+				default:
+					err = conn.WriteJSON(chat(room, "hi"))
+				}
+				if err != nil {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	testutil.Eventually(t, func() bool { return e.hub.ClientCount() == 0 && e.hub.RoomCount() == 0 }, 3*time.Second,
+		"every client unregistered and every room deleted")
 }

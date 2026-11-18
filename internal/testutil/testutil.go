@@ -4,7 +4,10 @@ package testutil
 
 import (
 	"bufio"
+	"fmt"
 	"net"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -58,4 +61,24 @@ func ExpectNoData(t testing.TB, conn net.Conn, d time.Duration) {
 	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
 		t.Fatalf("expected a read timeout, got %v", err)
 	}
+}
+
+// LeakCheckMain runs the package's tests and then fails if goroutines started
+// during them are still alive after a 2 s settle period (a dependency-free
+// stand-in for goleak). Use it as: func TestMain(m *testing.M) { os.Exit(testutil.LeakCheckMain(m)) }
+func LeakCheckMain(m *testing.M) int {
+	before := runtime.NumGoroutine()
+	if code := m.Run(); code != 0 {
+		return code
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond) // polling the goroutine count, nothing to synchronise with
+	}
+	if n := runtime.NumGoroutine(); n > before {
+		buf := make([]byte, 1<<20)
+		fmt.Fprintf(os.Stderr, "goroutine leak: %d before the tests, %d after\n%s\n", before, n, buf[:runtime.Stack(buf, true)])
+		return 1
+	}
+	return 0
 }
