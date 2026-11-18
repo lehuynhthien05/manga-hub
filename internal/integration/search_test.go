@@ -61,6 +61,7 @@ func backend(t *testing.T, catalogAddr string, timeout time.Duration) http.Handl
 	db, err := database.Open(filepath.Join(t.TempDir(), "b.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, store.Migrate(t.Context(), db))
 	mgr, err := auth.NewManager("test-secret-0123456789", time.Hour)
 	require.NoError(t, err)
 	return api.NewRouter(api.Deps{Store: store.New(db), Auth: mgr, Catalog: cat, BcryptCost: bcrypt.MinCost, Log: quiet})
