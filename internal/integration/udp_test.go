@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"mangahub/internal/tui/app"
 	"mangahub/internal/tui/client"
 	"mangahub/pkg/protocol"
 )
@@ -52,7 +53,7 @@ func TestRelease_UDPToSubscribersOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"subscribed"}`, got)
 
-	tui := startTUI(t, s.url, "", rt.udp)
+	tui := startTUI(t, s.url, app.Addrs{UDP: rt.udp})
 	tui.login("alice", "Alice1234")
 	tui.waitFor("UDP ●")
 
@@ -71,7 +72,7 @@ func TestRelease_UDPToSubscribersOnly(t *testing.T) {
 	_, err = udpRead(never, 300*time.Millisecond)
 	assert.Error(t, err, "a socket that never subscribed receives nothing")
 	tui.waitFor("New chapter: One Piece (ワンピース) — ch. 1101")
-	tui.waitFor("1 new alert")
+	tui.waitFor("4:1 new")
 	tui.keys("4")
 	tui.waitFor("1101")
 

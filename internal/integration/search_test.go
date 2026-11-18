@@ -26,6 +26,7 @@ import (
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
+	"mangahub/internal/backend/chatws"
 	"mangahub/internal/backend/notifyudp"
 	"mangahub/internal/backend/store"
 	"mangahub/internal/backend/synctcp"
@@ -67,7 +68,7 @@ func backend(t *testing.T, catalogAddr string, timeout time.Duration) http.Handl
 type realtime struct{ tcp, udp string }
 
 // newBackend builds the real router with an admin account (admin / Admin12345).
-// withRealtime also runs the real TCP hub and UDP notifier on loopback ports.
+// withRealtime also runs the real TCP hub, UDP notifier and chat hub (GET /ws).
 func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withRealtime bool) (http.Handler, realtime) {
 	t.Helper()
 	cat, err := catalogclient.New(catalogAddr, timeout)
@@ -97,7 +98,9 @@ func newBackend(t *testing.T, catalogAddr string, timeout time.Duration, withRea
 		wg.Go(func() { _ = tcp.Serve(ctx, ln) })
 		wg.Go(func() { _ = udp.Serve(ctx, pc) })
 		t.Cleanup(func() { cancel(); wg.Wait() })
-		deps.Publisher, deps.Notifier = tcp.Hub(), udp
+		chat := chatws.NewHub(chatws.DefaultLimits(), quiet)
+		t.Cleanup(chat.Close)
+		deps.Publisher, deps.Notifier, deps.Chat = tcp.Hub(), udp, chat.Serve
 		rt = realtime{ln.Addr().String(), pc.LocalAddr().String()}
 	}
 	return api.NewRouter(deps), rt
