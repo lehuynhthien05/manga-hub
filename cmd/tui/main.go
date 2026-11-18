@@ -1,5 +1,5 @@
 // Command tui is the MangaHub terminal client.
-// Phase 1 stub: it only loads and prints its configuration.
+// It logs to var/tui-<pid>.log only: writing to stdout/stderr would corrupt the screen.
 package main
 
 import (
@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"runtime/debug"
 
 	"github.com/joho/godotenv"
 	"mangahub/internal/config"
 	"mangahub/internal/logging"
+	"mangahub/internal/tui/app"
+	"mangahub/internal/tui/client"
 )
 
 func main() {
@@ -35,11 +38,36 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Phase 6.1.2 moves this to var/tui-<pid>.log: a TUI must never write to
-	// the terminal it is drawing on. The stub exits before any screen exists.
-	log := logging.New("tui", cfg.LogLevel)
+	if err := os.MkdirAll("var", 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "tui:", err)
+		os.Exit(1)
+	}
+	logPath := fmt.Sprintf("var/tui-%d.log", os.Getpid())
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tui: open log:", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	log := logging.NewWriter(f, "tui", cfg.LogLevel)
 	if envErr != nil && !errors.Is(envErr, fs.ErrNotExist) {
 		log.Warn("could not read .env", "err", envErr)
 	}
 	log.Info("effective config", "api", cfg.API, "tcp", cfg.TCP, "udp", cfg.UDP, "ws", cfg.WS)
+
+	// tview restores the terminal before re-raising a panic from its event loop;
+	// we then record the stack in the log and print it on the restored terminal.
+	defer func() {
+		if p := recover(); p != nil {
+			log.Error("panic", "panic", p, "stack", string(debug.Stack()))
+			fmt.Fprintf(os.Stderr, "tui crashed: %v (details in %s)\n", p, logPath)
+			os.Exit(1)
+		}
+	}()
+	if err := app.New(client.NewAPI(cfg.API), log).Run(); err != nil {
+		log.Error("tui stopped", "err", err)
+		fmt.Fprintln(os.Stderr, "tui:", err)
+		os.Exit(1)
+	}
+	log.Info("tui exited")
 }

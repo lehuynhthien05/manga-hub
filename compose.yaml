@@ -1,0 +1,62 @@
+# MangaHub servers. Used locally (docker compose up --build) and on the server
+# (deploy.sh: pull + up; the server never builds).
+#
+# The addresses and database paths under `environment:` describe the container
+# layout (service names, the /data volume). They are fixed here on purpose so
+# the same .env still works for `go run` on your own machine.
+name: mangahub
+
+services:
+  catalog:
+    image: ghcr.io/lehuynhthien05/manga-hub/catalog:latest
+    build:
+      context: .
+      target: catalog
+    environment:
+      GRPC_ADDR: ":9092"
+      CATALOG_DB_PATH: /data/catalog.db
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - catalog-data:/data
+    healthcheck:
+      # The port answers only after the schema, seed and gRPC listener are ready.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9092"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/lehuynhthien05/manga-hub/backend:latest
+    build:
+      context: .
+      target: backend
+    env_file: .env          # JWT_SECRET, ADMIN_*, JWT_TTL, GRPC_TIMEOUT, LOG_LEVEL ...
+    environment:
+      HTTP_ADDR: ":8080"
+      TCP_ADDR: ":9090"
+      UDP_ADDR: ":9091"
+      CATALOG_ADDR: catalog:9092
+      BACKEND_DB_PATH: /data/backend.db
+    depends_on:
+      catalog:
+        condition: service_healthy
+    ports:
+      - "8080:8080"         # REST + /ws
+      # Add these when the TCP sync hub (Phase 7) and UDP alerts (Phase 8) exist:
+      # - "9090:9090"
+      # - "9091:9091/udp"
+    volumes:
+      - backend-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  catalog-data:
+  backend-data:
