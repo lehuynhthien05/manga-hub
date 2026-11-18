@@ -24,15 +24,16 @@ Three programs, run separately:
 |---|---|
 | Config, wire types, `.proto` + stubs, schemas, seed data (35 manga) | done |
 | Catalog Service (gRPC: `SearchManga`, `GetManga`, `UpdateChapters`, health) | done |
-| Backend (accounts, catalog client, library, TCP, UDP, WebSocket) | in progress — currently only loads its config |
-| TUI | in progress — currently only loads its config |
+| Backend (accounts, catalog client, library, TCP sync, UDP alerts, WebSocket chat) | done |
+| TUI (login, browser, library, notifications, discussion, status/help) | done |
+| Dev scripts, failure matrix, load/soak tests | done |
 | Redis cache | optional, not started |
 
 ## Prerequisites
 - **Go 1.26 or later** (`go.mod` says `go 1.26.0`; an older Go downloads the toolchain automatically when `GOTOOLCHAIN=auto`).
 - **A C compiler** (Xcode Command Line Tools / gcc): the SQLite driver `mattn/go-sqlite3` uses CGO.
 - Optional: `protoc` with `protoc-gen-go` and `protoc-gen-go-grpc` (only to regenerate stubs), Redis (only for the cache), `grpcurl` (to poke the catalog by hand).
-- The helper script needs bash (macOS/Linux; on Windows use Git Bash or WSL).
+- The helper scripts need bash, `curl`, `nc`, `lsof` and `python3` (macOS/Linux; on Windows use Git Bash or WSL).
 
 ## Setup
 ```bash
@@ -48,6 +49,17 @@ go run ./cmd/backend      # terminal 2
 go run ./cmd/tui          # terminal 3 (open more TUIs for multi-client checks)
 ```
 Equivalent shortcuts: `make run-catalog`, `make run-backend`, `make run-tui`, or `make build` then `./bin/catalog`, `./bin/backend`, `./bin/tui`. `scripts/run-all.sh` starts catalog and backend in the background and the TUI in the foreground.
+
+Dev scripts (read ports from the environment, then `.env`, then the defaults):
+
+| Script | Does |
+|---|---|
+| `scripts/dev-up.sh` | build, refuse busy ports, start catalog then backend in the background (logs `var/*.out`, pids `var/*.pid`) |
+| `scripts/dev-down.sh` | stop them (SIGTERM, up to 5 s each) |
+| `scripts/reset-data.sh` | **deletes both databases** after stopping; the next start re-seeds the catalog |
+| `scripts/demo-accounts.sh` | register alice/bob/charlie and check the admin login |
+| `scripts/token.sh <user> <password>` | print a JWT (for `curl` / `nc` checks) |
+| `scripts/release.sh <manga-id> [chapter]` | admin release → UDP alert (needs `ADMIN_PASSWORD` in the environment) |
 
 On first start the catalog seeds 35 manga from the embedded `data/manga_seeds.json` (only when its table is empty); later starts keep the existing data. Delete `var/*.db*` (`make reset-data`) for a fresh catalog.
 
@@ -72,6 +84,7 @@ go test ./...          # all tests
 go test -race ./...    # with the race detector (needs CGO)
 ```
 Tests create their own temporary databases and loopback listeners; they do not need the programs running.
+Load and 60-second soak tests are behind a build tag: `go test -tags load -run 'TestLoad|TestSoak' -v ./internal/integration`.
 
 ## Regenerating the gRPC stubs
 ```bash
@@ -80,10 +93,11 @@ make proto             # protoc -I proto ... proto/manga.proto → proto/mangapr
 The generated files are committed; regenerate only after changing `proto/manga.proto`.
 
 ## Demo accounts
-The backend seeds one admin from `ADMIN_USERNAME` / `ADMIN_PASSWORD` (used to trigger chapter releases). Regular demo users (for example `alice`, `bob`, `charlie`) are registered through the TUI. *(Available once the backend is implemented.)*
+The backend seeds one admin from `ADMIN_USERNAME` / `ADMIN_PASSWORD` (used to trigger chapter releases). `scripts/demo-accounts.sh` registers the demo users `alice` / `Alice1234`, `bob` / `Bob12345` and `charlie` / `Charlie123` (demo values only).
 
 ## Known limitations
 - No TLS: tokens travel in clear text on localhost.
 - UDP alerts are best-effort: a datagram can be lost; the server counts *sent*, not *delivered*.
 - SQLite allows one writer at a time (WAL mode and a busy timeout keep this invisible at demo scale).
-- Backend and TUI are still being built (see Status).
+- An open TCP or WebSocket session stays valid after its JWT expires; only new connections check `exp`.
+- A restarted TUI gets a new UDP port; the old subscription lingers until its 2-minute TTL.

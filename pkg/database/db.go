@@ -215,6 +215,8 @@ func CheckDB(db *sql.DB) (map[string]int, error) {
 	tables := []string{"users", "manga", "user_progress", "reviews", "chat_messages"}
 	for _, table := range tables {
 		var cnt int
+		// Constant fragments only: table names cannot be bound parameters, and they come
+		// from the fixed list above, never from input.
 		row := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table))
 		if err := row.Scan(&cnt); err == nil {
 			counts[table] = cnt
