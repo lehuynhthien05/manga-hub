@@ -14,5 +14,5 @@ tidy: ; go mod tidy
 fmt:  ; gofmt -l -w .
 vet:  ; go vet ./...
 reset-data: ; rm -f var/*.db var/*.db-wal var/*.db-shm
-evidence: ; mkdir -p docs/evidence && go test -race -count=1 -v ./... 2>&1 | tee docs/evidence/go-test-$$(date +%Y%m%d-%H%M).txt
+evidence: ; scripts/evidence.sh
 progress: ; @awk '/^## /{p=$$0; if(!(p in s)){s[p]=1;o[++n]=p}} /^[[:space:]]*- \[[ xX]\]/{t[p]++} /^[[:space:]]*- \[[xX]\]/{d[p]++} END{for(i=1;i<=n;i++){k=o[i]; if(t[k]) printf "%3d/%-3d %3d%%  %s\n", d[k], t[k], 100*d[k]/t[k], k}}' docs/phases/plan.md
