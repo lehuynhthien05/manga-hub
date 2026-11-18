@@ -1,5 +1,6 @@
 // Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
-// Phases 3-5: HTTP (accounts, JWT, health, manga search via the gRPC catalog, library).
+// Phases 3-7: HTTP (accounts, JWT, health, manga search via the gRPC catalog, library)
+// and the TCP progress-sync hub.
 package main
 
 import (
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +23,7 @@ import (
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
 	"mangahub/internal/backend/store"
+	"mangahub/internal/backend/synctcp"
 	"mangahub/internal/config"
 	"mangahub/internal/logging"
 	"mangahub/pkg/database"
@@ -74,22 +77,35 @@ func run(cfg config.Backend, log *slog.Logger) error {
 	}
 	defer cat.Close() // runs after srv.Shutdown returns, so no request still uses it
 
+	tcpLn, err := net.Listen("tcp", cfg.TCPAddr)
+	if err != nil {
+		return err
+	}
+	tcp := synctcp.NewServer(mgr, synctcp.DefaultLimits(), log)
+	tcpCtx, stopTCP := context.WithCancel(ctx)
+	tcpDone := make(chan error, 1)
+	go func() { tcpDone <- tcp.Serve(tcpCtx, tcpLn) }()
+	defer func() { stopTCP(); <-tcpDone }() // closes every session and waits for its goroutines
+
 	if cfg.LogLevel != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: WebSocket arrives in Phase 9
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	log.Info("backend ready", "http", cfg.HTTPAddr, "db", cfg.DBPath, "catalog", cfg.CatalogAddr)
+	log.Info("backend ready", "http", cfg.HTTPAddr, "tcp", tcpLn.Addr().String(), "db", cfg.DBPath, "catalog", cfg.CatalogAddr)
 
 	select {
 	case err := <-errc:
 		return err
+	case err := <-tcpDone:
+		tcpDone <- err // let the deferred wait return
+		return fmt.Errorf("tcp server: %w", err)
 	case <-ctx.Done():
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
