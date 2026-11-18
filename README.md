@@ -27,7 +27,7 @@ Three programs, run separately:
 | Backend (accounts, catalog client, library, TCP sync, UDP alerts, WebSocket chat) | done |
 | TUI (login, browser, library, notifications, discussion, status/help) | done |
 | Dev scripts, failure matrix, load/soak tests | done |
-| Redis cache | optional, not started |
+| Redis cache (optional, `REDIS_ENABLED=true`) | done |
 
 ## Prerequisites
 - **Go 1.26 or later** (`go.mod` says `go 1.26.0`; an older Go downloads the toolchain automatically when `GOTOOLCHAIN=auto`).
@@ -78,6 +78,14 @@ On first start the catalog seeds 35 manga from the embedded `data/manga_seeds.js
 
 The full list with comments is in `.env.example`.
 
+## Caching (optional Redis)
+With `REDIS_ENABLED=true`, `GET /api/manga/:id` is cache-aside: a **MISS** asks the catalog over gRPC and stores the
+JSON under `manga:v1:<id>` for `CACHE_TTL` (30 s); a **HIT** comes from Redis. The response header `X-Cache: HIT|MISS`
+shows which (absent when caching is off; the TUI shows it after Enter on a Browser row). A chapter release deletes the
+key after the catalog update and before the UDP alert. The catalog's SQLite stays the source of truth: errors are never
+cached, and when Redis is down every request is a MISS (each Redis call has a 200 ms budget, then Redis is skipped for
+1 s); `/api/health` reports `"redis":"up|down|disabled"`.
+
 ## Tests
 ```bash
 go test ./...          # all tests
@@ -101,3 +109,4 @@ The backend seeds one admin from `ADMIN_USERNAME` / `ADMIN_PASSWORD` (used to tr
 - SQLite allows one writer at a time (WAL mode and a busy timeout keep this invisible at demo scale).
 - An open TCP or WebSocket session stays valid after its JWT expires; only new connections check `exp`.
 - A restarted TUI gets a new UDP port; the old subscription lingers until its 2-minute TTL.
+- Cache race: a reader that misses just before a release can store the old manga just after the release deleted it; it stays stale for at most `CACHE_TTL`.

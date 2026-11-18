@@ -186,7 +186,7 @@ func (b *Browser) refreshDetails() {
 	}
 	id, seq := m.ID, b.seq
 	b.a.Go(func() func(*App) {
-		fresh, err := b.a.api.GetManga(b.a.ctx, id)
+		fresh, cacheState, err := b.a.api.GetMangaCache(b.a.ctx, id)
 		return func(a *App) {
 			if err != nil {
 				a.Fail(err)
@@ -195,6 +195,9 @@ func (b *Browser) refreshDetails() {
 			if cur := b.selected(); seq == b.seq && cur != nil && cur.ID == id {
 				*cur = fresh
 				b.showDetails(cur)
+				if cacheState != "" { // demo aid: shows the Redis cache-aside at work
+					fmt.Fprintf(b.details, "\n[gray]cache: %s[-]", cacheState)
+				}
 				a.Info("Details refreshed")
 			}
 		}

@@ -59,17 +59,23 @@ func (c *API) SetToken(tok string) { c.token.Store(&tok) }
 func (c *API) Clear()              { c.token.Store(nil) }
 
 func (c *API) do(ctx context.Context, method, path string, in, out any, hdr map[string]string) error {
+	_, err := c.doH(ctx, method, path, in, out, hdr)
+	return err
+}
+
+// doH is do that also returns the response headers.
+func (c *API) doH(ctx context.Context, method, path string, in, out any, hdr map[string]string) (http.Header, error) {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -83,14 +89,14 @@ func (c *API) do(ctx context.Context, method, path string, in, out any, hdr map[
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err() // superseded or shutting down: not a connectivity problem
+			return nil, ctx.Err() // superseded or shutting down: not a connectivity problem
 		}
-		return &UnreachableError{Base: c.base, Err: err}
+		return nil, &UnreachableError{Base: c.base, Err: err}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return &UnreachableError{Base: c.base, Err: err}
+		return nil, &UnreachableError{Base: c.base, Err: err}
 	}
 	if resp.StatusCode >= 300 {
 		ae := &APIError{Status: resp.StatusCode, Path: path}
@@ -98,12 +104,12 @@ func (c *API) do(ctx context.Context, method, path string, in, out any, hdr map[
 		if json.Unmarshal(raw, &env) == nil {
 			ae.Code, ae.Message = env.Code, env.Error
 		}
-		return ae
+		return resp.Header, ae
 	}
 	if out == nil {
-		return nil
+		return resp.Header, nil
 	}
-	return json.Unmarshal(raw, out)
+	return resp.Header, json.Unmarshal(raw, out)
 }
 
 func (c *API) Register(ctx context.Context, username, password string) (protocol.User, error) {
@@ -130,9 +136,15 @@ func (c *API) Search(ctx context.Context, q string, page, limit int) (protocol.S
 }
 
 func (c *API) GetManga(ctx context.Context, id string) (protocol.Manga, error) {
-	var m protocol.Manga
-	err := c.do(ctx, http.MethodGet, PathManga+"/"+url.PathEscape(id), nil, &m, nil)
+	m, _, err := c.GetMangaCache(ctx, id)
 	return m, err
+}
+
+// GetMangaCache also returns the X-Cache header ("HIT", "MISS", or "" when caching is off).
+func (c *API) GetMangaCache(ctx context.Context, id string) (protocol.Manga, string, error) {
+	var m protocol.Manga
+	h, err := c.doH(ctx, http.MethodGet, PathManga+"/"+url.PathEscape(id), nil, &m, nil)
+	return m, h.Get("X-Cache"), err
 }
 
 func (c *API) ListLibrary(ctx context.Context) (protocol.LibraryResponse, error) {

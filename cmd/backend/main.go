@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
+	"mangahub/internal/backend/cache"
 	"mangahub/internal/backend/catalogclient"
 	"mangahub/internal/backend/chatws"
 	"mangahub/internal/backend/notifyudp"
@@ -101,12 +102,22 @@ func run(cfg config.Backend, log *slog.Logger) error {
 
 	chat := chatws.NewHub(chatws.DefaultLimits(), log)
 
+	var mangaCache api.MangaCache // nil = no caching, no X-Cache header
+	if cfg.RedisEnabled {
+		mc := cache.New(cfg.RedisAddr, cfg.CacheTTL, log)
+		defer mc.Close()
+		mangaCache = mc
+		log.Info("redis cache enabled", "addr", cfg.RedisAddr, "ttl", cfg.CacheTTL)
+	} else {
+		log.Info("redis cache disabled")
+	}
+
 	if cfg.LogLevel != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), Notifier: udp, Chat: chat.Serve, BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), Notifier: udp, Chat: chat.Serve, Cache: mangaCache, BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: it would cut long-lived WebSockets
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,12 +21,22 @@ import (
 	"mangahub/pkg/protocol"
 )
 
-// fakeCatalog returns err when set, otherwise canned data; it records the last search.
+// fakeCatalog returns err when set, otherwise canned data; it records the last search,
+// counts Get calls and keeps the total a successful release sets (1100 at first).
 type fakeCatalog struct {
 	err     error
 	healthy bool
 	last    api.SearchParams
 	items   []protocol.Manga
+	gets    atomic.Int64
+	total   int
+}
+
+func (f *fakeCatalog) current() int {
+	if f.total == 0 {
+		return 1100
+	}
+	return f.total
 }
 
 func (f *fakeCatalog) Search(_ context.Context, p api.SearchParams) (protocol.SearchResponse, error) {
@@ -37,26 +48,29 @@ func (f *fakeCatalog) Search(_ context.Context, p api.SearchParams) (protocol.Se
 }
 
 func (f *fakeCatalog) Get(_ context.Context, id string) (protocol.Manga, error) {
+	f.gets.Add(1)
 	if f.err != nil {
 		return protocol.Manga{}, f.err
 	}
 	if id == "nope" {
 		return protocol.Manga{}, api.ErrCatalogNotFound
 	}
-	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: 1100}, nil
+	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: f.current()}, nil
 }
 
-// UpdateChapters behaves like the catalog for a manga with 1100 chapters.
+// UpdateChapters behaves like the catalog: the new total must be higher than the current one.
 func (f *fakeCatalog) UpdateChapters(_ context.Context, id string, total int) (protocol.Manga, int, error) {
 	switch {
 	case f.err != nil:
 		return protocol.Manga{}, 0, f.err
 	case id == "nope":
 		return protocol.Manga{}, 0, api.ErrCatalogNotFound
-	case total <= 1100:
+	case total <= f.current():
 		return protocol.Manga{}, 0, api.ErrCatalogConflict
 	}
-	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: total}, 1100, nil
+	prev := f.current()
+	f.total = total
+	return protocol.Manga{ID: id, Title: "One Piece", Genres: []string{}, TotalChapters: total}, prev, nil
 }
 
 func (f *fakeCatalog) Healthy(context.Context) bool { return f.healthy }
