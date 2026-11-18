@@ -22,6 +22,7 @@ type Deps struct {
 	Publisher      ProgressPublisher // nil means no-op
 	Notifier       ChapterNotifier   // UDP new-chapter alerts; nil means no-op
 	Cache          CacheInvalidator  // Redis (Phase 12); nil means no-op
+	Chat           gin.HandlerFunc   // WebSocket chat upgrade (chatws.Hub.Serve); nil means no /ws route
 	BcryptCost     int
 	Log            *slog.Logger
 }
@@ -64,6 +65,10 @@ func NewRouter(d Deps) *gin.Engine {
 	lib.POST("", h.addLibrary)
 	lib.GET("", h.listLibrary)
 	lib.PUT("/:mangaId/progress", h.updateProgress)
+
+	if d.Chat != nil { // JWT checked before the upgrade: a bad token gets 401 JSON, not a WebSocket
+		r.GET("/ws", auth.Middleware(d.Auth, d.Log), d.Chat)
+	}
 
 	admin := r.Group("/api/admin", auth.Middleware(d.Auth, d.Log), auth.RequireAdmin())
 	admin.POST("/manga/:id/release", h.release)

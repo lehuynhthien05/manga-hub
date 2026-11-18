@@ -38,7 +38,7 @@ func (s *StatusScreen) render(a *App) {
 		row(c.Label, c.State, c.OK)
 	}
 
-	b.WriteString("\n[::b]Screens[::-]\n  Login → Browser → Details → Add to Library\n  Library → Update chapter / status\n  Discussion (Phase 9) · Notifications · Status & Help\n")
+	b.WriteString("\n[::b]Screens[::-]\n  Login → Browser → Details → Add to Library\n  Library → Update chapter / status\n  Discussion · Notifications · Status & Help\n")
 	b.WriteString("\n[::b]Keys[::-]\n")
 	for _, k := range keyHelp {
 		fmt.Fprintf(&b, "  [gray]%-8s[-] %-8s %s\n", k.Scope, tview.Escape(k.Keys), k.Action)

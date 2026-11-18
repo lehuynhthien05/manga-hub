@@ -59,12 +59,12 @@ func (s *screen) keys(text string) {
 func (s *screen) key(k tcell.Key, mod tcell.ModMask) { s.sim.InjectKey(k, 0, mod) }
 
 // startTUI runs a real TUI on its own 80×24 simulation screen.
-func startTUI(t *testing.T, apiURL, tcpAddr, udpAddr string) *screen {
+func startTUI(t *testing.T, apiURL string, addrs app.Addrs) *screen {
 	t.Helper()
 	sim := tcell.NewSimulationScreen("UTF-8")
 	require.NoError(t, sim.Init())
 	sim.SetSize(80, 24)
-	a := app.New(client.NewAPI(apiURL), tcpAddr, udpAddr, quiet)
+	a := app.New(client.NewAPI(apiURL), addrs, quiet)
 	a.SetScreen(sim)
 	done := make(chan error, 1)
 	go func() { done <- a.Run() }()
@@ -93,7 +93,7 @@ func TestTUI_AgainstRealBackend(t *testing.T) {
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	_ = resp.Body.Close()
 
-	s := startTUI(t, srv.URL, "", "")
+	s := startTUI(t, srv.URL, app.Addrs{})
 	s.waitFor("MangaHub — Login")
 	s.keys("alice")
 	s.key(tcell.KeyTab, 0)
