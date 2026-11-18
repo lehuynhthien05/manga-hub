@@ -28,6 +28,11 @@ func (s *spy) Notify(ev protocol.NewChapter) int {
 
 func (s *spy) Invalidate(_ context.Context, id string) { s.calls = append(s.calls, "invalidate:"+id) }
 
+// The spy is also a cache that always misses, so only the release path records anything.
+func (s *spy) Get(context.Context, string) (protocol.Manga, bool) { return protocol.Manga{}, false }
+func (s *spy) Set(context.Context, protocol.Manga)                {}
+func (s *spy) Ping(context.Context) error                         { return nil }
+
 func adminEnv(t *testing.T) (http.Handler, *fakeCatalog, *spy, map[string][]string) {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "b.db"))

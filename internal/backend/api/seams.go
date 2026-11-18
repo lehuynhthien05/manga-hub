@@ -44,7 +44,16 @@ type ChapterNotifier interface {
 	Notify(ev protocol.NewChapter) (sent int)
 }
 
-// CacheInvalidator is implemented by the optional Redis cache (Phase 12).
+// CacheInvalidator is implemented by the optional Redis cache.
 type CacheInvalidator interface {
 	Invalidate(ctx context.Context, mangaID string)
+}
+
+// MangaCache is the optional Redis cache-aside for GET /api/manga/:id. It fails
+// open: Get reports a miss on any Redis error, Set and Invalidate only log.
+type MangaCache interface {
+	CacheInvalidator
+	Get(ctx context.Context, id string) (protocol.Manga, bool)
+	Set(ctx context.Context, m protocol.Manga)
+	Ping(ctx context.Context) error
 }

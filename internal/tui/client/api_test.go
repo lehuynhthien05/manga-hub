@@ -143,3 +143,27 @@ func TestAPI_UnreachableAndCanceled(t *testing.T) {
 	_, err = c.Health(ctx)
 	assert.ErrorIs(t, err, context.Canceled, "a canceled request is not reported as unreachable")
 }
+
+func TestAPI_GetMangaCacheHeader(t *testing.T) {
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n > 1 {
+			w.Header().Set("X-Cache", "HIT")
+		} else {
+			w.Header().Set("X-Cache", "MISS")
+		}
+		_ = json.NewEncoder(w).Encode(protocol.Manga{ID: "one-piece"})
+	}))
+	t.Cleanup(srv.Close)
+	c := client.NewAPI(srv.URL)
+	for _, want := range []string{"MISS", "HIT"} {
+		m, state, err := c.GetMangaCache(context.Background(), "one-piece")
+		require.NoError(t, err)
+		assert.Equal(t, "one-piece", m.ID)
+		assert.Equal(t, want, state)
+	}
+	_, state, err := client.NewAPI("http://127.0.0.1:1").GetMangaCache(context.Background(), "x")
+	assert.Error(t, err)
+	assert.Empty(t, state)
+}
