@@ -47,10 +47,24 @@ func (h *handlers) getManga(c *gin.Context) {
 		Fail(c, http.StatusBadRequest, protocol.CodeInvalidInput, "id must match [a-z0-9-]{1,64}")
 		return
 	}
-	m, err := h.Catalog.Get(c.Request.Context(), id)
+	ctx := c.Request.Context()
+	if h.Cache != nil { // cache-aside: HIT from Redis, MISS → gRPC → store with the TTL
+		if m, ok := h.Cache.Get(ctx, id); ok {
+			c.Header("X-Cache", "HIT")
+			c.JSON(http.StatusOK, m)
+			return
+		}
+	}
+	m, err := h.Catalog.Get(ctx, id)
 	if err != nil {
-		h.writeCatalogErr(c, err)
+		h.writeCatalogErr(c, err) // errors are never cached and carry no X-Cache
 		return
+	}
+	if h.Cache != nil {
+		// shortcut: a reader that MISSed just before a release can SET the old value just
+		// after the release's DEL; the TTL (CACHE_TTL, 30 s) bounds how long that can last.
+		h.Cache.Set(ctx, m)
+		c.Header("X-Cache", "MISS")
 	}
 	c.JSON(http.StatusOK, m)
 }

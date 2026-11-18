@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -11,10 +10,6 @@ import (
 type noopNotifier struct{}
 
 func (noopNotifier) Notify(protocol.NewChapter) int { return 0 }
-
-type noopCache struct{}
-
-func (noopCache) Invalidate(context.Context, string) {}
 
 // release order: catalog UpdateChapters → cache invalidate → UDP notify.
 // A catalog failure sends nothing; a UDP problem never fails the request.
@@ -48,7 +43,9 @@ func (h *handlers) release(c *gin.Context) {
 		h.writeCatalogErr(c, err)
 		return
 	}
-	h.Cache.Invalidate(ctx, id)
+	if h.Cache != nil { // after the update succeeded, before anyone reacts to the alert
+		h.Cache.Invalidate(ctx, id)
+	}
 	sent := h.Notifier.Notify(protocol.NewChapter{Type: protocol.TypeNewChapter, MangaID: m.ID, Title: m.Title, Chapter: m.TotalChapters})
 	h.Log.Info("chapter released", "manga", m.ID, "chapter", m.TotalChapters, "udp_sent", sent)
 	c.JSON(http.StatusOK, protocol.ReleaseResponse{Manga: m, Chapter: m.TotalChapters, UDPSent: sent})
