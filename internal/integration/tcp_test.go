@@ -19,16 +19,16 @@ import (
 )
 
 type syncStack struct {
-	url, tcp string
+	url, tcp, udp string
 }
 
 func newSyncStack(t *testing.T) syncStack {
 	t.Helper()
 	_, catAddr := serveCatalog(t, "127.0.0.1:0")
-	h, tcpAddr := newBackend(t, catAddr, 2*time.Second, true)
+	h, rt := newBackend(t, catAddr, 2*time.Second, true)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return syncStack{srv.URL, tcpAddr}
+	return syncStack{srv.URL, rt.tcp, rt.udp}
 }
 
 // call is a tiny curl: it returns the status code and the body.
@@ -130,7 +130,7 @@ func TestSync_TwoTUIs(t *testing.T) {
 	code, _ := call(t, "POST", s.url+client.PathLibrary, alice, `{"manga_id":"one-piece","status":"reading"}`)
 	require.Equal(t, http.StatusCreated, code)
 
-	a, b := startTUI(t, s.url, s.tcp), startTUI(t, s.url, s.tcp)
+	a, b := startTUI(t, s.url, s.tcp, ""), startTUI(t, s.url, s.tcp, "")
 	for _, x := range []*screen{a, b} {
 		x.login("alice", "Alice1234")
 		x.waitFor("TCP ●")
