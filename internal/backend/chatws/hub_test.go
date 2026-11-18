@@ -229,22 +229,35 @@ func TestWS_MalformedInputIsolated(t *testing.T) {
 	assert.Equal(t, "binary frames are not supported", alice.readType("error")["error"])
 	bob.nothing() // nothing leaked to the room
 
-	// The rate limiter: a burst of 50 gets at most burst (10) + a few through.
+	// The rate limiter: of a 50-message burst only about the burst size (10) is broadcast.
+	// Replies go through the sender's bounded send buffer without blocking, so some
+	// "slow down" replies may be dropped: count what bob receives until the line goes quiet.
 	for i := range 50 {
 		alice.send(chat("general", fmt.Sprintf("m%d", i)))
 	}
-	limited := 0
-	for range 50 {
-		if alice.read()["type"] == "error" {
-			limited++
+	chats := 0
+	for quiet := false; !quiet; {
+		select {
+		case m, ok := <-bob.frames:
+			if ok && m["type"] == "chat" {
+				chats++
+			}
+			quiet = !ok
+		case <-time.After(500 * time.Millisecond): // waiting for the absence of more frames
+			quiet = true
 		}
 	}
-	assert.GreaterOrEqual(t, limited, 30, "most of a 50-message burst is refused with 'slow down'")
+	// Burst 10, minus the 2 tokens the invalid chats above already used, plus a little refill.
+	assert.GreaterOrEqual(t, chats, 5, "the burst allowance gets through")
+	assert.LessOrEqual(t, chats, 13, "the rest of the 50 is refused with 'slow down'")
 
 	// An oversize frame closes only that connection.
-	_ = alice.conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", 5000)))
-	alice.closed()
-	assert.Equal(t, "alice left", bob.readType("system")["text"])
+	carol := e.dial(t, "carol")
+	carol.join("general")
+	_ = carol.conn.WriteMessage(websocket.TextMessage, []byte(strings.Repeat("x", 5000)))
+	carol.closed()
+	for bob.readType("system")["text"] != "carol left" { // skips "carol joined"
+	}
 }
 
 // Hub level with writer-less clients: a loopback socket's buffers would hide a

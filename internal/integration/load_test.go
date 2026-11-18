@@ -86,12 +86,6 @@ func TestLoad(t *testing.T) {
 	assert.Less(t, pct(tm.by["search"], .9), 500*time.Millisecond, "reference target: search p90 < 500 ms")
 }
 
-func between(s, from, to string) string {
-	_, rest, _ := strings.Cut(s, from)
-	v, _, _ := strings.Cut(rest, to)
-	return v
-}
-
 // 10.5.2: 20 TCP + 20 WS clients for 60 s with periodic traffic; goroutines and heap stay flat.
 func TestSoak(t *testing.T) {
 	_, catAddr := serveCatalog(t, "127.0.0.1:0")
