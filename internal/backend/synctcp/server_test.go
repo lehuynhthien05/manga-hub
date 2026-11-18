@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -179,15 +180,66 @@ func TestTCP_AbruptDisconnectAndLimits(t *testing.T) {
 	assert.Equal(t, 7, a2.event(t).Chapter)
 }
 
-func TestTCP_IdleTimeoutClosesSilentPeer(t *testing.T) {
+// A half-open peer (authenticated, then silent — e.g. a laptop that lost Wi-Fi) is
+// closed by the idle timeout, which frees its socket and hub slot.
+func TestTCP_HalfOpenClosedByIdleTimeout(t *testing.T) {
 	lim := DefaultLimits()
-	lim.IdleTimeout = 200 * time.Millisecond
+	lim.IdleTimeout = 300 * time.Millisecond
 	e := start(t, lim)
 	c := e.dialAuthed(t, "alice")
+	begin := time.Now()
 	_ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, err := c.r.ReadByte()
+	closedAfter := time.Since(begin)
 	assert.ErrorIs(t, err, io.EOF, "silence longer than IdleTimeout closes the session")
+	assert.Less(t, closedAfter, lim.IdleTimeout+100*time.Millisecond)
+	assert.GreaterOrEqual(t, closedAfter, lim.IdleTimeout-50*time.Millisecond)
 	testutil.Eventually(t, func() bool { return e.srv.Hub().Count() == 0 }, time.Second, "removed")
+	t.Logf("half-open session closed after %v (IdleTimeout %v)", closedAfter.Round(time.Millisecond), lim.IdleTimeout)
+}
+
+// Stress (-short skips it): 5 users × 10 sessions, 100 publishes from 10 goroutines.
+func TestStress_TCPManySessionsManyPublishers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress")
+	}
+	lim := DefaultLimits()
+	lim.SendBuffer = 256 // stress the locking, not the slow-consumer rule
+	e := start(t, lim)
+	const users, perUser, publishes = 5, 10, 100
+	var clients [users][]*client
+	for u := range users {
+		for range perUser {
+			clients[u] = append(clients[u], e.dialAuthed(t, fmt.Sprintf("u%d", u)))
+		}
+	}
+	testutil.Eventually(t, func() bool { return e.srv.Hub().Count() == users*perUser }, 2*time.Second, "all registered")
+
+	var pub sync.WaitGroup
+	for g := range 10 {
+		pub.Go(func() {
+			for i := g; i < publishes; i += 10 {
+				e.srv.Hub().Publish(fmt.Sprintf("u%d", i%users), ev(i), "")
+			}
+		})
+	}
+	var recv sync.WaitGroup
+	for u := range users {
+		for _, c := range clients[u] {
+			recv.Go(func() {
+				for range publishes / users { // each user gets every 5th event
+					assert.Equal(t, protocol.TypeProgressUpdated, c.event(t).Type)
+				}
+			})
+		}
+	}
+	pub.Wait()
+	recv.Wait()
+	for _, cs := range clients {
+		for _, c := range cs {
+			testutil.ExpectNoData(t, c.conn, 50*time.Millisecond) // nothing extra, nothing of other users
+		}
+	}
 }
 
 func TestTCP_ConcurrentPublishAndNoLeaks(t *testing.T) {
