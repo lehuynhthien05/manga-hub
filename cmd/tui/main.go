@@ -64,7 +64,7 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	if err := app.New(client.NewAPI(cfg.API), cfg.TCP, cfg.UDP, log).Run(); err != nil {
+	if err := app.New(client.NewAPI(cfg.API), app.Addrs{TCP: cfg.TCP, UDP: cfg.UDP, WS: cfg.WS}, log).Run(); err != nil {
 		log.Error("tui stopped", "err", err)
 		fmt.Fprintln(os.Stderr, "tui:", err)
 		os.Exit(1)

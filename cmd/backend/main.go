@@ -1,6 +1,6 @@
 // Command backend is the MangaHub REST + WebSocket + TCP + UDP server.
 // Phases 3-7: HTTP (accounts, JWT, health, manga search via the gRPC catalog, library)
-// the TCP progress-sync hub and the UDP new-chapter notifier.
+// the TCP progress-sync hub, the UDP new-chapter notifier and the WebSocket chat.
 package main
 
 import (
@@ -22,6 +22,7 @@ import (
 	"mangahub/internal/auth"
 	"mangahub/internal/backend/api"
 	"mangahub/internal/backend/catalogclient"
+	"mangahub/internal/backend/chatws"
 	"mangahub/internal/backend/notifyudp"
 	"mangahub/internal/backend/store"
 	"mangahub/internal/backend/synctcp"
@@ -98,14 +99,16 @@ func run(cfg config.Backend, log *slog.Logger) error {
 	go func() { udpDone <- udp.Serve(rtCtx, udpConn) }()
 	defer func() { stopRT(); <-udpDone }() // the same context stops both real-time servers
 
+	chat := chatws.NewHub(chatws.DefaultLimits(), log)
+
 	if cfg.LogLevel != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), Notifier: udp, BcryptCost: bcrypt.DefaultCost, Log: log}),
+		Handler:           api.NewRouter(api.Deps{Store: st, Auth: mgr, Catalog: cat, CatalogTimeout: cfg.GRPCTimeout, Publisher: tcp.Hub(), Notifier: udp, Chat: chat.Serve, BcryptCost: bcrypt.DefaultCost, Log: log}),
 		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: WebSocket arrives in Phase 9
+		IdleTimeout:       60 * time.Second, // no global Read/WriteTimeout: it would cut long-lived WebSockets
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -121,7 +124,9 @@ func run(cfg config.Backend, log *slog.Logger) error {
 	}
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(sctx)
+	err = srv.Shutdown(sctx) // stops new upgrades; upgraded (hijacked) connections are the hub's
+	chat.Close()
+	return err
 }
 
 // ensureAdmin creates the demo admin once; an existing account is never overwritten.

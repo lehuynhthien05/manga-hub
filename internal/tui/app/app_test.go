@@ -102,7 +102,7 @@ func startApp(t *testing.T, base string) *harness {
 	sim := tcell.NewSimulationScreen("UTF-8")
 	require.NoError(t, sim.Init())
 	sim.SetSize(80, 24)
-	a := New(client.NewAPI(base), "", "", quiet)
+	a := New(client.NewAPI(base), Addrs{}, quiet)
 	a.SetScreen(sim)
 	done := make(chan error, 1)
 	go func() { done <- a.Run() }()
@@ -253,7 +253,7 @@ func TestEvents_AppliedInOrder(t *testing.T) {
 }
 
 func TestPost_DoesNotBlockAfterShutdown(t *testing.T) {
-	a := New(client.NewAPI("http://127.0.0.1:1"), "", "", quiet) // never run: nothing drains the channel
+	a := New(client.NewAPI("http://127.0.0.1:1"), Addrs{}, quiet) // never run: nothing drains the channel
 	for range cap(a.events) {
 		a.Post(EventFunc(func(*App) {}))
 	}
