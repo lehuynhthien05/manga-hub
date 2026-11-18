@@ -12,3 +12,5 @@ coverage.out
 AGENTS.md
 CLAUDE.md
 CONTEXT.md
+.env.*
+!.env.example
