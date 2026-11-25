@@ -1,0 +1,26 @@
+%% Discovery: search through Gin → gRPC → catalog.
+%% Source: internal/backend/api/catalog_handlers.go (searchManga, mapCatalogErr),
+%% internal/backend/catalogclient/client.go (call, translate), internal/catalog/server.go.
+sequenceDiagram
+  participant T as TUI
+  participant G as Gin backend :8080
+  participant C as catalogclient
+  participant S as Catalog gRPC :9092
+  participant D as catalog.db
+
+  T->>G: GET /api/manga?q=one&page=1&limit=20
+  G->>G: parseSearchQuery (bad q/limit/page → 400 invalid_input)
+  G->>C: Search(ctx, params)
+  C->>S: SearchManga (deadline = GRPC_TIMEOUT, 2 s)
+  S->>D: SELECT … LIMIT/OFFSET (bound parameters)
+  D-->>S: rows + total
+  S-->>C: SearchMangaResponse{items, total}
+  C-->>G: SearchResponse
+  G-->>T: 200 {items, total, page, limit}
+
+  alt catalog stopped or frozen
+    C->>S: SearchManga
+    Note over C,S: Unavailable (stopped) or DeadlineExceeded after 2 s (frozen)
+    C-->>G: ErrCatalogUnavailable
+    G-->>T: 503 {"error":"catalog service unavailable","code":"catalog_unavailable"}
+  end

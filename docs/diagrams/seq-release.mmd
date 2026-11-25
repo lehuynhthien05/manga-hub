@@ -1,0 +1,24 @@
+%% Chapter release: catalog first, then cache invalidate, then best-effort UDP.
+%% Source: internal/backend/api/admin_handlers.go (release), internal/backend/notifyudp/server.go (Notify).
+sequenceDiagram
+  participant Adm as admin (curl / scripts/release.sh)
+  participant G as Gin backend :8080
+  participant S as Catalog gRPC :9092
+  participant R as Redis (optional)
+  participant U as UDP notifier :9091
+  participant T as subscribed TUIs
+
+  Note over T,U: each TUI sent {"type":"subscribe","token":…} and pings every 30 s<br/>(subscription expires after 2 min of silence)
+  Adm->>G: POST /api/admin/manga/one-piece/release (admin JWT)
+  G->>S: UpdateChapters(one-piece, total+1)
+  alt not higher than the current total
+    S-->>G: FailedPrecondition
+    G-->>Adm: 409 conflict (no cache change, no UDP)
+  else updated
+    S-->>G: manga (new total)
+    G->>R: DEL manga:v1:one-piece
+    G->>U: Notify(new_chapter)
+    U--)T: one datagram per subscriber (may be lost)
+    G-->>Adm: 200 {manga, chapter, udp_sent}
+    Note over G,T: udp_sent counts attempted sends, not deliveries
+  end

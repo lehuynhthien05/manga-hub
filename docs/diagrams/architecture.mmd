@@ -1,0 +1,35 @@
+%% MangaHub architecture: three processes, every protocol edge with its default port.
+%% Ports come from internal/config/config.go; change them here if the defaults change.
+flowchart LR
+  subgraph TUIP["cmd/tui (one process per user session)"]
+    TUI["tview TUI<br/>internal/tui"]
+  end
+
+  subgraph BE["cmd/backend (one process)"]
+    GIN["Gin HTTP API<br/>/api/* :8080"]
+    WS["WebSocket chat hub<br/>GET /ws :8080"]
+    TCPH["TCP progress hub<br/>:9090"]
+    UDPS["UDP notifier<br/>:9091"]
+    CC["catalogclient<br/>(gRPC client, 2 s deadline)"]
+  end
+
+  subgraph CAT["cmd/catalog (one process)"]
+    GRPC["gRPC MangaService<br/>:9092"]
+  end
+
+  BDB[("var/backend.db<br/>users, user_library")]
+  CDB[("var/catalog.db<br/>manga")]
+  RDS[("Redis :6379<br/>optional cache")]
+
+  TUI -- "HTTP JSON + JWT<br/>accounts, search, library, progress" --> GIN
+  TUI <-- "WebSocket, JWT before upgrade<br/>chat rooms" --> WS
+  TUI <-- "TCP, newline-delimited JSON<br/>progress_updated" --> TCPH
+  TUI <-. "UDP datagrams, best-effort<br/>subscribe / new_chapter" .-> UDPS
+
+  GIN --> BDB
+  GIN -- "Publish after commit" --> TCPH
+  GIN -- "Notify after release" --> UDPS
+  GIN --> CC
+  GIN -. "cache-aside GET /api/manga/:id" .-> RDS
+  CC -- "gRPC SearchManga, GetManga,<br/>UpdateChapters" --> GRPC
+  GRPC --> CDB

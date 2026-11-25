@@ -1,0 +1,24 @@
+%% Progress sync: HTTP write, then TCP push to the same user's other session.
+%% Source: internal/backend/api/library_handlers.go (updateProgress),
+%% internal/backend/store/library.go (UpdateProgress), internal/backend/synctcp/hub.go (Publish).
+sequenceDiagram
+  participant A as TUI A (alice)
+  participant G as Gin backend :8080
+  participant S as Catalog gRPC :9092
+  participant D as backend.db
+  participant H as TCP hub :9090
+  participant B as TUI B (alice)
+
+  Note over A,H: earlier: A and B each sent {"type":"auth","token":…} and got auth_ok with a session_id
+  A->>G: PUT /api/library/one-piece/progress<br/>Authorization: Bearer JWT, X-Session-ID: A's id<br/>{"current_chapter": 12}
+  G->>G: validate shape (400)
+  G->>D: GetLibrary(user from JWT, one-piece)
+  D-->>G: row (or 404 not in your library)
+  G->>S: GetManga (2 s deadline)
+  S-->>G: total_chapters (12 > total → 400, catalog down → 503)
+  G->>D: UPDATE … version = version + 1 … RETURNING
+  D-->>G: row (version n+1), committed
+  G->>H: Publish(user, progress_updated, exclude A's session)
+  H-->>B: {"type":"progress_updated","manga_id":"one-piece","chapter":12,"version":n+1,…}\n
+  G-->>A: 200 {library item}
+  B->>B: ApplyProgress: ignore if version ≤ known
