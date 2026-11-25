@@ -32,6 +32,8 @@ const (
 	healthService     = "mangaproto.MangaService"
 )
 
+// Client is the backend's gRPC client for the catalog. It implements api.Catalog
+// and turns gRPC status codes into the api.ErrCatalog* errors.
 type Client struct {
 	conn    *grpc.ClientConn
 	rpc     mangaproto.MangaServiceClient
@@ -54,6 +56,7 @@ func New(addr string, timeout time.Duration) (*Client, error) {
 		health: healthpb.NewHealthClient(conn), timeout: timeout}, nil
 }
 
+// Close closes the gRPC connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
 // call runs fn under the GRPC_TIMEOUT deadline, derived from the request
@@ -64,6 +67,7 @@ func (c *Client) call(ctx context.Context, fn func(ctx context.Context) error) e
 	return translate(fn(ctx))
 }
 
+// Search calls SearchManga under the GRPC_TIMEOUT deadline.
 func (c *Client) Search(ctx context.Context, p api.SearchParams) (protocol.SearchResponse, error) {
 	var res *mangaproto.SearchMangaResponse
 	err := c.call(ctx, func(ctx context.Context) (err error) {
@@ -81,6 +85,7 @@ func (c *Client) Search(ctx context.Context, p api.SearchParams) (protocol.Searc
 	return out, nil
 }
 
+// Get calls GetManga under the GRPC_TIMEOUT deadline.
 func (c *Client) Get(ctx context.Context, id string) (protocol.Manga, error) {
 	var res *mangaproto.GetMangaResponse
 	err := c.call(ctx, func(ctx context.Context) (err error) {
@@ -93,6 +98,8 @@ func (c *Client) Get(ctx context.Context, id string) (protocol.Manga, error) {
 	return fromProto(res.GetManga()), nil
 }
 
+// UpdateChapters calls UpdateChapters and also returns the previous total.
+// A total that is not higher than the current one maps to ErrCatalogConflict.
 func (c *Client) UpdateChapters(ctx context.Context, id string, newTotal int) (protocol.Manga, int, error) {
 	var res *mangaproto.UpdateChaptersResponse
 	err := c.call(ctx, func(ctx context.Context) (err error) {
@@ -105,6 +112,7 @@ func (c *Client) UpdateChapters(ctx context.Context, id string, newTotal int) (p
 	return fromProto(res.GetManga()), int(res.GetPreviousTotalChapters()), nil
 }
 
+// Healthy asks the standard gRPC health service, with its own short deadline.
 func (c *Client) Healthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, healthTimeout)
 	defer cancel()

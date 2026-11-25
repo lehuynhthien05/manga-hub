@@ -14,6 +14,8 @@ import (
 	"mangahub/pkg/protocol"
 )
 
+// Server accepts TCP sync connections, authenticates the first line and hands
+// each session to its Hub.
 type Server struct {
 	hub  *Hub
 	auth auth.Verifier
@@ -22,10 +24,12 @@ type Server struct {
 	wg   sync.WaitGroup // connection handlers and session writers
 }
 
+// NewServer creates a Server with its own Hub. v checks the token in the auth line.
 func NewServer(v auth.Verifier, lim Limits, log *slog.Logger) *Server {
 	return &Server{hub: NewHub(lim, log), auth: v, lim: lim, log: log}
 }
 
+// Hub returns the hub that the HTTP layer publishes progress events to.
 func (s *Server) Hub() *Hub { return s.hub }
 
 // Serve accepts until ctx is cancelled, then closes every connection and waits for

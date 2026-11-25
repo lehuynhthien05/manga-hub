@@ -59,6 +59,7 @@ func (c *ChatClient) Join(room string) bool {
 	return c.Send(protocol.WSJoin{Type: protocol.TypeJoin, Room: room})
 }
 
+// Leave forgets the room (no rejoin after a reconnect) and sends the leave.
 func (c *ChatClient) Leave(room string) bool {
 	c.mu.Lock()
 	delete(c.rooms, room)
@@ -66,8 +67,11 @@ func (c *ChatClient) Leave(room string) bool {
 	return c.Send(protocol.WSLeave{Type: protocol.TypeLeave, Room: room})
 }
 
+// Connected reports whether a WebSocket connection is currently open.
 func (c *ChatClient) Connected() bool { return c.connected.Load() }
 
+// Run connects until ctx ends, rejoining the remembered rooms after every
+// reconnect; the backoff doubles from MinBackoff up to MaxBackoff.
 func (c *ChatClient) Run(ctx context.Context) {
 	minB, maxB := or(c.MinBackoff, time.Second), or(c.MaxBackoff, 30*time.Second)
 	backoff := minB

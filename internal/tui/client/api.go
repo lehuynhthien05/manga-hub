@@ -32,6 +32,7 @@ type APIError struct {
 	Path          string
 }
 
+// Error reports the path, status and error code (not the token or the body).
 func (e *APIError) Error() string { return fmt.Sprintf("%s: %d %s", e.Path, e.Status, e.Code) }
 
 // UnreachableError means no HTTP answer at all (refused, timeout, DNS).
@@ -50,10 +51,12 @@ type API struct {
 	token atomic.Pointer[string]
 }
 
+// NewAPI creates a client for the backend at base, with a 5 s timeout per request.
 func NewAPI(base string) *API {
 	return &API{base: strings.TrimRight(base, "/"), hc: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// Base returns the backend URL. SetToken and Clear set or drop the in-memory JWT.
 func (c *API) Base() string        { return c.base }
 func (c *API) SetToken(tok string) { c.token.Store(&tok) }
 func (c *API) Clear()              { c.token.Store(nil) }
@@ -112,6 +115,7 @@ func (c *API) doH(ctx context.Context, method, path string, in, out any, hdr map
 	return resp.Header, json.Unmarshal(raw, out)
 }
 
+// Register creates an account; it does not log in.
 func (c *API) Register(ctx context.Context, username, password string) (protocol.User, error) {
 	var u protocol.User
 	err := c.do(ctx, http.MethodPost, PathRegister, protocol.RegisterRequest{Username: username, Password: password}, &u, nil)
@@ -128,6 +132,7 @@ func (c *API) Login(ctx context.Context, username, password string) (protocol.Lo
 	return lr, err
 }
 
+// Search returns one page of catalog results.
 func (c *API) Search(ctx context.Context, q string, page, limit int) (protocol.SearchResponse, error) {
 	v := url.Values{"q": {q}, "page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(limit)}}
 	var res protocol.SearchResponse
@@ -135,6 +140,7 @@ func (c *API) Search(ctx context.Context, q string, page, limit int) (protocol.S
 	return res, err
 }
 
+// GetManga returns one manga's details.
 func (c *API) GetManga(ctx context.Context, id string) (protocol.Manga, error) {
 	m, _, err := c.GetMangaCache(ctx, id)
 	return m, err
@@ -147,12 +153,14 @@ func (c *API) GetMangaCache(ctx context.Context, id string) (protocol.Manga, str
 	return m, h.Get("X-Cache"), err
 }
 
+// ListLibrary returns the logged-in user's library.
 func (c *API) ListLibrary(ctx context.Context) (protocol.LibraryResponse, error) {
 	var res protocol.LibraryResponse
 	err := c.do(ctx, http.MethodGet, PathLibrary, nil, &res, nil)
 	return res, err
 }
 
+// AddToLibrary adds a manga with an initial status.
 func (c *API) AddToLibrary(ctx context.Context, mangaID, status string) (protocol.LibraryItem, error) {
 	var it protocol.LibraryItem
 	err := c.do(ctx, http.MethodPost, PathLibrary, protocol.AddLibraryRequest{MangaID: mangaID, Status: status}, &it, nil)
@@ -171,10 +179,12 @@ func (c *API) UpdateProgress(ctx context.Context, mangaID string, chapter *int, 
 	return it, err
 }
 
+// Health is the body of GET /api/health.
 type Health struct {
 	Status, Catalog, Redis string
 }
 
+// Health asks the backend whether it and the catalog (and Redis) are up.
 func (c *API) Health(ctx context.Context) (Health, error) {
 	var h Health
 	err := c.do(ctx, http.MethodGet, PathHealth, nil, &h, nil)

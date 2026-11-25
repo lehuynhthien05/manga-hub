@@ -30,6 +30,7 @@ type MangaCache struct {
 	downTill atomic.Int64 // unix nanos until which Redis is skipped
 }
 
+// New creates the cache. It does not connect yet: the first command dials Redis.
 func New(addr string, ttl time.Duration, log *slog.Logger) *MangaCache {
 	return &MangaCache{ttl: ttl, log: log, rdb: redis.NewClient(&redis.Options{Addr: addr,
 		DialTimeout: opTimeout, ReadTimeout: opTimeout, WriteTimeout: opTimeout, // defaults are 5 s / 3 s
@@ -52,6 +53,7 @@ func (c *MangaCache) warn(op string, err error) {
 	}
 }
 
+// Get returns the cached manga; any error or a corrupt value counts as a miss.
 func (c *MangaCache) Get(ctx context.Context, id string) (protocol.Manga, bool) {
 	if c.skip() {
 		return protocol.Manga{}, false
@@ -73,6 +75,7 @@ func (c *MangaCache) Get(ctx context.Context, id string) (protocol.Manga, bool) 
 	return m, true
 }
 
+// Set stores m for the TTL. A failure is logged at most every 10 s and ignored.
 func (c *MangaCache) Set(ctx context.Context, m protocol.Manga) {
 	b, err := json.Marshal(m)
 	if err != nil || c.skip() {
@@ -95,10 +98,12 @@ func (c *MangaCache) Invalidate(ctx context.Context, id string) {
 	}
 }
 
+// Ping checks Redis for /api/health.
 func (c *MangaCache) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, healthLimit)
 	defer cancel()
 	return c.rdb.Ping(ctx).Err()
 }
 
+// Close closes the Redis client.
 func (c *MangaCache) Close() error { return c.rdb.Close() }

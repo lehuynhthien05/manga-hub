@@ -41,6 +41,7 @@ type Server struct {
 	pc   net.PacketConn
 }
 
+// NewServer creates a server with no subscriptions. c is the clock used for the TTL.
 func NewServer(v auth.Verifier, c clock.Clock, log *slog.Logger) *Server {
 	return &Server{auth: v, clock: c, log: log, subs: map[string]*sub{}}
 }

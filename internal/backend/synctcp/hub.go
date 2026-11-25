@@ -26,6 +26,7 @@ func DefaultLimits() Limits {
 		AuthTimeout: 5 * time.Second, IdleTimeout: 45 * time.Second, WriteTimeout: 5 * time.Second, MaxLine: 64 << 10}
 }
 
+// ErrTooMany is returned when MaxTotal or MaxPerUser sessions are already open.
 var ErrTooMany = errors.New("too many connections")
 
 type session struct {
@@ -88,6 +89,7 @@ type Hub struct {
 	log    *slog.Logger
 }
 
+// NewHub creates an empty hub. The Server registers sessions after auth.
 func NewHub(lim Limits, log *slog.Logger) *Hub {
 	return &Hub{byUser: map[string]map[string]*session{}, lim: lim, log: log}
 }

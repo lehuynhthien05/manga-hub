@@ -22,6 +22,8 @@ type Limits struct {
 	PongWait, PingPeriod, WriteWait                        time.Duration
 }
 
+// DefaultLimits: the server pings every 54 s and drops a client after 60 s
+// without a pong; each client may send 5 messages/s with bursts of 10.
 func DefaultLimits() Limits {
 	return Limits{MaxClients: 200, MaxRooms: 100, HistorySize: 50, MaxText: 500, SendBuffer: 32, ReadLimit: 4096,
 		MsgRate: 5, MsgBurst: 10, PongWait: 60 * time.Second, PingPeriod: 54 * time.Second, WriteWait: 10 * time.Second}
@@ -52,6 +54,7 @@ type Hub struct {
 	closed  bool
 }
 
+// NewHub creates an empty hub. Rooms are created on the first join.
 func NewHub(lim Limits, log *slog.Logger) *Hub {
 	return &Hub{clients: map[*Client]struct{}{}, rooms: map[string]map[*Client]struct{}{},
 		history: map[string][]protocol.WSHistoryItem{}, lim: lim, log: log}
@@ -205,12 +208,14 @@ func (h *Hub) Close() {
 	h.wg.Wait()
 }
 
+// ClientCount is the number of connected clients (for tests and health checks).
 func (h *Hub) ClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
 }
 
+// RoomCount is the number of rooms with at least one member.
 func (h *Hub) RoomCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
