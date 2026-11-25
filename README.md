@@ -19,6 +19,8 @@ Three programs, run separately:
 | `cmd/backend` | Gin REST + WebSocket + TCP hub + UDP notifier, SQLite (`var/backend.db`: `users`, `user_library`) | HTTP+WS `:8080`, TCP `:9090`, UDP `:9091` |
 | `cmd/tui` | terminal UI (tview) — the only user interface | — (client) |
 
+Diagrams (Mermaid sources and PNG exports): [`docs/diagrams/`](docs/diagrams/).
+
 ## Status
 | Part | State |
 |---|---|
@@ -103,9 +105,19 @@ The generated files are committed; regenerate only after changing `proto/manga.p
 ## Demo accounts
 The backend seeds one admin from `ADMIN_USERNAME` / `ADMIN_PASSWORD` (used to trigger chapter releases). `scripts/demo-accounts.sh` registers the demo users `alice` / `Alice1234`, `bob` / `Bob12345` and `charlie` / `Charlie123` (demo values only).
 
+Passwords must be 8-72 characters with an upper-case letter, a lower-case letter and a digit; usernames are 3-32 of `A-Z a-z 0-9 _ -`.
+
+To release a chapter (sends the UDP alert to every subscribed TUI), with catalog and backend running:
+```bash
+scripts/demo-accounts.sh                       # once, after a fresh start
+set -a; source .env; set +a                    # puts ADMIN_PASSWORD in the environment
+scripts/release.sh one-piece                   # next chapter; or: scripts/release.sh one-piece 1200
+```
+
 ## Known limitations
 - No TLS: tokens travel in clear text on localhost.
 - UDP alerts are best-effort: a datagram can be lost; the server counts *sent*, not *delivered*.
+- `GET /api/library` asks the catalog once per library item (at most 8 calls in parallel): fine for a demo library, slow for a large one.
 - SQLite allows one writer at a time (WAL mode and a busy timeout keep this invisible at demo scale).
 - An open TCP or WebSocket session stays valid after its JWT expires; only new connections check `exp`.
 - A restarted TUI gets a new UDP port; the old subscription lingers until its 2-minute TTL.
